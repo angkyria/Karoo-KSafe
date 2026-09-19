@@ -81,7 +81,7 @@ data class Thresholds(
      * see [nonGapUprightVetoMaxGyroRadS]. This does NOT weaken real-crash
      * coverage: an incapacitated rider cannot keep a laterally-unstable bike
      * balanced within the veto cones — 15° [promptVetoUprightAngleDeg] for the
-     * prompt-stop regime (R6-G) and 25° [gapVetoUprightAngleDeg] for the gap
+     * prompt-stop regime (R6-G) and 37° [gapVetoUprightAngleDeg] for the gap
      * regime (R6-F) — so it topples on-side (≥ cone → confirms) or tumbles (high
      * gyro → confirms). Only the balanced-conscious upright stand (low gyro, ≈0°
      * tilt) is suppressed.
@@ -105,22 +105,25 @@ data class Thresholds(
      * worse than a false positive, so the veto only engages when the bike is
      * almost identical to its pre-impact orientation.
      *
-     * Widened from 15° to 25° after field evidence (session 2ab57f): a settled
-     * bike at ~18.6° from upright produced a false positive with the old 15°
-     * cone. Domain rationale: a real crash always tips the bike well past 25°;
-     * vetoing up to 25° at rest has negligible FN risk. A bike merely
-     * tilted/knocked to 25–45° is left to confirm: that posture is consistent
-     * with a real crash and must NOT be vetoed.
+     * Widened 15° → 25° after session 2ab57f (settled bike at ~18.6° FP-confirmed),
+     * then 25° → 37° after the 2026-09-19 corpus replay (`scripts/replay_gap_cone.py`):
+     * 13 field GAP confirms sat at 25–40° at rest (‖sil‖ ≈ g, upright or propped),
+     * all benign, 12 of them below 37°. Every probable real downed bike at rest in
+     * the corpus reads ≥ 61°, so 37° keeps ~24° of margin. No real GAP-regime fall
+     * exists in the corpus (real falls stop within ~2 s → prompt regime), so the
+     * residual FN — a delayed-stop fall leaving the bike propped at 25–37° — is
+     * unmeasured, not disproved. Kept below the 45° [uprightAngleThresholdDegrees]:
+     * a bike knocked to 37–45° is left to confirm.
      *
      * Only consulted in the gap regime (`firstSilenceGapMs > delayedStopGapMs`);
      * the prompt-stop regime uses the stricter [promptVetoUprightAngleDeg].
      */
-    val gapVetoUprightAngleDeg: Double = 25.0,
+    val gapVetoUprightAngleDeg: Double = 37.0,
     /**
      * PROMPT-regime (prompt-stop) upright veto cone. Kept at the original tight 15° while the
-     * GAP-regime cone is 25°: a prompt stop (rider stopped quickly post-impact) is more
+     * GAP-regime cone is 37°: a prompt stop (rider stopped quickly post-impact) is more
      * crash-like than a gap stop (rider rode on = conscious), so it gets the stricter cone.
-     * The widening to 25° has field evidence only in the GAP regime (session 2ab57f).
+     * The widenings (25°, then 37°) have field evidence only in the GAP regime.
      */
     val promptVetoUprightAngleDeg: Double = 15.0,
     /**

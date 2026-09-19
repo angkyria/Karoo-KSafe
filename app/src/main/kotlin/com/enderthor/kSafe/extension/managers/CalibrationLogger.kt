@@ -90,7 +90,7 @@ class CalibrationLogger(
          * silence-window orientation showed the bike within the upright cone
          * (`0 ≤ angle < veto cone` — NOT the 45° uprightAngleThresholdDegrees) → benign
          * stop, not a crash. The cone depends on the regime: `gapVetoUprightAngleDeg`
-         * (25°) for GAP (delayed stop, `gap_ms > delayedStopGapMs` — rider rode on, so
+         * (37°) for GAP (delayed stop, `gap_ms > delayedStopGapMs` — rider rode on, so
          * lenient) vs the stricter `promptVetoUprightAngleDeg` (15°) for PROMPT (prompt
          * stop, more crash-like). The `veto_thr` payload field records the cone actually
          * in force for that row's regime. Counting these

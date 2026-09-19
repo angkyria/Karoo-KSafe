@@ -162,16 +162,14 @@ class CrashDetectionManager(
         const val UPRIGHT_ANGLE_THRESHOLD_DEGREES = 45.0
 
         /** Angle (deg) below which the GAP-regime confirm is vetoed (R6-F). Widened
-         *  from 15° to 25° after field evidence (session 2ab57f): a settled bike at
-         *  ~18.6° was FP-confirmed with the old 15° cone. Domain rationale: a real
-         *  crash always tips the bike well past 25°; vetoing up to 25° at rest has
-         *  negligible FN risk. A veto suppresses an SOS, and an FN is worse than an
-         *  FP. Matches [Thresholds.gapVetoUprightAngleDeg]. */
-        const val GAP_VETO_UPRIGHT_ANGLE_DEG = 25.0
+         *  15° → 25° (session 2ab57f) → 37° (2026-09-19 corpus replay: 13 benign field
+         *  GAP confirms at 25–40°, real downed bikes read ≥ 61°). A veto suppresses an
+         *  SOS; see [Thresholds.gapVetoUprightAngleDeg] for the FN reasoning. Matches it. */
+        const val GAP_VETO_UPRIGHT_ANGLE_DEG = 37.0
 
         /** Angle (deg) below which the PROMPT-stop regime confirm is vetoed (R6-G).
          *  Kept at the original tight 15° — the prompt stop is more crash-like than
-         *  a gap stop, so it gets the stricter cone. The widening to 25° has field
+         *  a gap stop, so it gets the stricter cone. The GAP widenings have field
          *  evidence only in the GAP regime (session 2ab57f).
          *  Matches [Thresholds.promptVetoUprightAngleDeg]. */
         const val PROMPT_VETO_UPRIGHT_ANGLE_DEG = 15.0
@@ -741,9 +739,9 @@ class CrashDetectionManager(
                 // on a GAP veto it is informational only (the gap regime ignores rotation).
                 val regime = if (stateMachine.lastUprightVetoGapRegime) "GAP" else "PROMPT"
                 // veto_thr must reflect the cone actually applied for THIS regime: GAP uses the
-                // lenient gapVetoUprightAngleDeg (25°), PROMPT (prompt-stop, R6-G) the stricter
+                // lenient gapVetoUprightAngleDeg (37°), PROMPT (prompt-stop, R6-G) the stricter
                 // promptVetoUprightAngleDeg (15°). Logging the gap cone unconditionally made every
-                // PROMPT-regime row read 25° when 15° was in force.
+                // PROMPT-regime row read the GAP cone when 15° was in force.
                 val vetoThr = if (stateMachine.lastUprightVetoGapRegime)
                     stateMachine.thresholds.gapVetoUprightAngleDeg
                 else

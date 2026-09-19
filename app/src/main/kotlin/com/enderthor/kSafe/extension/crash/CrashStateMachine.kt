@@ -359,7 +359,7 @@ class CrashStateMachine(
      * Set to `true` on the most recent [onSample] call when a GAP-regime confirm
      * (`firstSilenceGapMs > delayedStopGapMs`) reached the 20 s confirm gate but
      * was **vetoed** because the silence-window orientation shows the device within
-     * the tight upright cone (`0 ≤ angle < gapVetoUprightAngleDeg`, GAP=25° /
+     * the tight upright cone (`0 ≤ angle < gapVetoUprightAngleDeg`, GAP=37° /
      * `promptVetoUprightAngleDeg`, PROMPT=15° — NOT the 45° uprightAngleThresholdDegrees)
      * — a benign delayed stop, not a crash.
      * The state machine returns
@@ -936,9 +936,9 @@ class CrashStateMachine(
                 // the bike (it falls over); a stop-and-stand leaves it ≈ as upright as
                 // the pre-impact reference. So at the confirm gate, if orientation
                 // is now computable AND almost identical to the pre-impact reference
-                // (0 ≤ angle < vetoCone — GAP=25° / PROMPT=15°, NOT the 45°
+                // (0 ≤ angle < vetoCone — GAP=37° / PROMPT=15°, NOT the 45°
                 // timing threshold: a veto suppresses an SOS, and a false negative is
-                // far worse than a false positive, so a bike merely tilted to 25–45°
+                // far worse than a false positive, so a bike tilted past the cone (up to 45°)
                 // is left to confirm). When the angle is non-upright (≥ the veto cone)
                 // OR not computable (-1.0: invalid ref / too few samples) we confirm
                 // exactly as before — the orientation regime, the on-side paths, and
@@ -973,9 +973,9 @@ class CrashStateMachine(
                 // vector — the angle is then independently verifiable from (pre-impact ref,
                 // sil) rather than trusting a single derived number. (v2.0.0 logged -1.0 here.)
                 captureSilenceOrientation()
-                // Use the GAP cone (25°) in the gap regime and the PROMPT cone (15°) otherwise.
+                // Use the GAP cone (37°) in the gap regime and the PROMPT cone (15°) otherwise.
                 // A prompt stop is more crash-like than a gap stop (rider rode on = conscious),
-                // so it gets the stricter 15° cone. The widening to 25° has field evidence only
+                // so it gets the stricter 15° cone. The GAP widenings have field evidence only
                 // in the GAP regime (session 2ab57f); reverting PROMPT to 15° avoids adding FN
                 // risk with no field justification.
                 val vetoCone = if (gapRegime) thresholds.gapVetoUprightAngleDeg else thresholds.promptVetoUprightAngleDeg
@@ -990,7 +990,7 @@ class CrashStateMachine(
                 // (peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS). An
                 // over-the-bars / endo that ends wheels-up (≈ upright) spikes the gyro
                 // and is left to confirm; a toppled on-side crash is already excluded
-                // by the 15° PROMPT cone (GAP=25°, PROMPT=15°). An incapacitated rider
+                // by the 15° PROMPT cone (GAP=37°, PROMPT=15°). An incapacitated rider
                 // cannot balance a laterally-unstable bike inside that cone — it topples
                 // or tumbles — so the only thing suppressed here is the balanced-conscious stand.
                 val vetoNow = upright &&

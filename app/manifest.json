@@ -7,5 +7,5 @@
   "latestVersionCode": 202609071,
   "developer": "github.com/lockevod",
   "description": "Karoo safety extension on two layers: REACTIVE (crash detection, SOS, check-in, HR-based medical episode and wellness detection) and PREVENTIVE (carb and hydration tracking that adapts to your effort using the Karoo's HR and power zones, reminding you to fuel before bonking or dehydration impairs your judgment on the bike). Sends emergency alerts via WhatsApp (CallMeBot), Telegram, Pushover or ntfy.",
-  "releaseNotes": "Crash and heart-rate detection now recover if a Karoo data stream stops mid-ride — before they could stay quiet until the end. Fewer false crash alerts when GPS briefly freezes. Less battery: only the sensors your enabled features need. New: turn off the ride-start warning if you don't use alerts (Provider tab)."
+  "releaseNotes": "Crash and heart-rate detection now recover if a Karoo data stream stops mid-ride — before they could stay quiet until the end. Fewer false crash alerts when GPS briefly freezes, or when you stop and lean the bike after a bump. Less battery: only the sensors your enabled features need. New: turn off the ride-start warning if you don't use alerts (Provider tab)."
 }

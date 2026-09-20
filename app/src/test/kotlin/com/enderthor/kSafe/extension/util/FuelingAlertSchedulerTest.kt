@@ -466,4 +466,51 @@ class FuelingAlertSchedulerTest {
             )
         )
     }
+
+    // ── suppressedByRecentAlert (time-alert quiet window) ─────────────────────
+
+    @Test
+    fun `a time reminder within the quiet window of a deficit alert is suppressed`() {
+        val min = 60_000L
+        // 2026-09-20 field ride: deficit and time reminders landed 2.0 / 2.0 / 3.7
+        // min apart. The two 2-min pairs must go; the 3.7-min one is outside the
+        // 3-min window by design (the rider picked 3 min max).
+        for (gapMin in listOf(0L, 1L, 2L)) {
+            assertTrue(
+                "$gapMin min after the deficit alert is still inside the window",
+                FuelingAlertScheduler.suppressedByRecentAlert(10L * min, 10L * min + gapMin * min)
+            )
+        }
+        assertFalse(
+            "exactly at the window edge the channel reopens",
+            FuelingAlertScheduler.suppressedByRecentAlert(10L * min, 13L * min)
+        )
+        assertFalse(
+            "3.7 min apart is outside the window",
+            FuelingAlertScheduler.suppressedByRecentAlert(10L * min, 13L * min + 42_000L)
+        )
+    }
+
+    @Test
+    fun `the quiet window never throttles the time channel by itself`() {
+        // The anchor is the DEFICIT clock, so a rider with the deficit alert off
+        // (or simply not behind) keeps the exact cadence they configured — a 1-min
+        // reminder must not become a 3-min one. Anchoring on "last alert of any
+        // source" instead would make every one of these true.
+        val min = 60_000L
+        for (intervalMin in listOf(1L, 2L, 3L)) {
+            assertFalse(
+                "no deficit alert has fired, so a ${intervalMin}-min grid must not be gated",
+                FuelingAlertScheduler.suppressedByRecentAlert(0L, intervalMin * min)
+            )
+        }
+    }
+
+    @Test
+    fun `a backwards clock step never silences the channel`() {
+        assertFalse(
+            "an NTP step backwards must not read as 'fired in the future'",
+            FuelingAlertScheduler.suppressedByRecentAlert(60L * 60_000L, 45L * 60_000L)
+        )
+    }
 }

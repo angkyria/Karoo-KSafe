@@ -148,4 +148,52 @@ internal object FuelingAlertScheduler {
         if (now - cooldownFrom < (reminderIntervalMs shl backoffShift)) return false
         return true
     }
+
+    /**
+     * Minimum quiet time before a TIME-grid reminder may follow a DEFICIT alert
+     * from the same tracker. The time grid and the deficit cooldown are
+     * independent clocks, so nothing stopped them landing minutes apart: the
+     * 2026-09-20 field ride (`0e6f39_c16c8f`, 8 hydration fires, nothing logged)
+     * paired every one of its three deficit reminders with a time reminder
+     * 2.0 / 2.0 / 3.7 min away. The rider hears two beeps, and the second one
+     * says less than the first.
+     *
+     * 3 min, which swallows the two 2.0-min pairs and leaves the 3.7-min one
+     * (the rider's call). Not a setting: the rider already configures both
+     * intervals, and this only stops them colliding.
+     */
+    const val QUIET_WINDOW_MS: Long = 3L * 60_000L
+
+    /**
+     * True when the last DEFICIT alert is recent enough that a time-grid
+     * reminder on top of it would just be noise.
+     *
+     * **One-way by construction.** The parameter is the deficit clock, and the
+     * deficit path never consults this function — so no configuration of the
+     * time channel can silence a deficit alert. That channel reports an actual
+     * physiological gap ("you are N ml behind"), which is independent of, and
+     * more actionable than, "your N-minute reminder is due". It is also why the
+     * anchor is NOT "the last alert of any source": that would make the time
+     * channel throttle *itself* to a 3-min floor, halving the cadence of a
+     * rider who configured a 1- or 2-min reminder.
+     *
+     * The caller consumes the tick it was about to fire rather than deferring
+     * it, widening the existing same-tick "deficit wins, time tick consumed"
+     * rule to a window. A grid tick swallowed this way is skipped, not queued —
+     * and while the deficit channel keeps firing inside the window (possible
+     * when `4 × deficitReminderIntervalMin ≈ timeIntervalMin`, e.g. 5 and 20),
+     * the time channel can stay quiet for the rest of the ride. That outcome is
+     * intended: the rider still gets a beep per interval, carrying strictly
+     * more information than the one it replaced.
+     *
+     * The `now >= lastDeficitAlertFireMs` half keeps a backwards NTP step from
+     * reading as "fired in the future" and silencing the channel until the
+     * clock catches up. `0L` (no deficit alert yet) falls out of the same
+     * comparison.
+     *
+     * **Pure**: mutates nothing.
+     */
+    fun suppressedByRecentAlert(lastDeficitAlertFireMs: Long, now: Long): Boolean =
+        lastDeficitAlertFireMs > 0L && now >= lastDeficitAlertFireMs &&
+            now - lastDeficitAlertFireMs < QUIET_WINDOW_MS
 }

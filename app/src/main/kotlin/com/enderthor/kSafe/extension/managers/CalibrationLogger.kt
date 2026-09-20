@@ -261,6 +261,17 @@ class CalibrationLogger(
         FUELING_HYDRATION_FIRED("HYD_FIRE"),
         /** Periodic 2-minute snapshot of hydration tracker state. */
         FUELING_HYDRATION_PERIODIC("HYD_PERIODIC"),
+        /**
+         * A TIME-grid fueling reminder was due but swallowed by the quiet window
+         * (`FuelingAlertScheduler.suppressedByRecentAlert`) — a deficit alert had
+         * fired less than `QUIET_WINDOW_MS` earlier. Deliberately NOT logged as
+         * `*_FIRED`: nothing beeped, and a consumer counting fires must not be
+         * inflated (same reasoning as [CRASH_GATE_SUPPRESSED] vs [CRASH_CONFIRMED]).
+         * Payload carries `kind=` (carb/hyd) and `since_deficit_ms=`, which is the
+         * whole point of the row: the 3-min window was picked from three field
+         * samples, and only these rows say whether it is the right number.
+         */
+        FUELING_ALERT_QUIETED("FUEL_QUIET"),
         // ─── FIT export (added 2026-05) ──────────────────────────────────────
         /**
          * Karoo invoked `startFit` — the FIT developer-field writer is now active. Lists

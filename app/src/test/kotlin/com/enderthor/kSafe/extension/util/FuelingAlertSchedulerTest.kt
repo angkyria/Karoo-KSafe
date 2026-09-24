@@ -161,6 +161,63 @@ class FuelingAlertSchedulerTest {
     }
 
     @Test
+    fun `a log does not resurrect a tick the initial delay already filtered`() {
+        // 2026-09-24 field ride (`0e6f39_c38ced`): interval 22, initial delay 30.
+        // The 22-min tick was filtered; the rider's first drink at ~41 min released
+        // the filter and made that stale tick due, so a "time to drink" reminder
+        // fired seconds after drinking. A tick the rider logged after must not fire.
+        val interval = 22L * 60_000L
+        val delay = 30L * 60_000L
+        val logAt = 41L * 60_000L
+        val stale = FuelingAlertScheduler.currentDueTimeTick(
+            enabled = true, intervalMs = interval, sessionStartMs = 0L,
+            lastTimeAlertFireMs = 0L, initialDelayMs = delay, cumLogged = 150,
+            now = logAt + 12_000L, lastRealLogMs = logAt,
+        )
+        assertEquals("stale 22-min tick must stay silent after the log", 0L, stale)
+        // The grid is untouched: the 44-min tick still fires.
+        val next = FuelingAlertScheduler.currentDueTimeTick(
+            enabled = true, intervalMs = interval, sessionStartMs = 0L,
+            lastTimeAlertFireMs = 0L, initialDelayMs = delay, cumLogged = 150,
+            now = 44L * 60_000L, lastRealLogMs = logAt,
+        )
+        assertEquals(44L * 60_000L, next)
+    }
+
+    @Test
+    fun `a log before the tick still lets that tick fire`() {
+        // Released-filter contract: logged at 5 min, the 20-min tick fires on time.
+        val tick = FuelingAlertScheduler.currentDueTimeTick(
+            enabled = true, intervalMs = 20L * 60_000L, sessionStartMs = 0L,
+            lastTimeAlertFireMs = 0L, initialDelayMs = 30L * 60_000L, cumLogged = 25,
+            now = 20L * 60_000L + 10_000L, lastRealLogMs = 5L * 60_000L,
+        )
+        assertEquals(20L * 60_000L, tick)
+    }
+
+    @Test
+    fun `outside the initial delay a log after the tick does not suppress it`() {
+        // Ordinary ticks keep their pre-fix behaviour: the guard only covers ticks the
+        // initial delay had dropped (a combined-field undo keeps the log timestamp).
+        val tick = FuelingAlertScheduler.currentDueTimeTick(
+            enabled = true, intervalMs = 20L * 60_000L, sessionStartMs = 0L,
+            lastTimeAlertFireMs = 20L * 60_000L, initialDelayMs = 30L * 60_000L, cumLogged = 25,
+            now = 40L * 60_000L + 10_000L, lastRealLogMs = 40L * 60_000L + 5_000L,
+        )
+        assertEquals(40L * 60_000L, tick)
+    }
+
+    @Test
+    fun `a future-dated log from a clock step does not suppress a filtered-window tick`() {
+        val tick = FuelingAlertScheduler.currentDueTimeTick(
+            enabled = true, intervalMs = 22L * 60_000L, sessionStartMs = 0L,
+            lastTimeAlertFireMs = 0L, initialDelayMs = 30L * 60_000L, cumLogged = 150,
+            now = 22L * 60_000L + 10_000L, lastRealLogMs = 41L * 60_000L,
+        )
+        assertEquals(22L * 60_000L, tick)
+    }
+
+    @Test
     fun `disabled time alert never produces a tick`() {
         val tick = FuelingAlertScheduler.currentDueTimeTick(
             enabled = false, intervalMs = 20L * 60_000L, sessionStartMs = 0L,

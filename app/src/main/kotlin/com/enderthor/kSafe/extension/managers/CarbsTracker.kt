@@ -881,6 +881,7 @@ class CarbsTracker(
         initialDelayMs = config.carbTimeInitialDelayMin * 60_000L,
         cumLogged = cumLoggedG,
         now = now,
+        lastRealLogMs = lastRealLogMs,
     )
 
     /** See [evaluateDeficitAlert] return-value note — same contract on the time side. */

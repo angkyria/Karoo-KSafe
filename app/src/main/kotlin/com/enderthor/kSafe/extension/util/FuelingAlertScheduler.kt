@@ -15,7 +15,9 @@ package com.enderthor.kSafe.extension.util
  *  2. **Initial-delay FILTER** (not shift). When the rider hasn't logged
  *     anything yet, ticks earlier than `sessionStartMs + initialDelayMs` are
  *     silently dropped — the grid stays anchored to session start. Once the
- *     rider has logged at least one item the filter releases.
+ *     rider has logged at least one item the filter releases — for later ticks
+ *     only: a tick it already dropped stays dropped if the rider logged after it
+ *     (`lastRealLogMs`).
  *
  *  3. **Deficit reminder cooldown** (`shouldFireDeficit`). Once the deficit
  *     crosses the rider-configured threshold, subsequent reminder alerts are
@@ -59,6 +61,7 @@ internal object FuelingAlertScheduler {
         initialDelayMs: Long,
         cumLogged: Int,
         now: Long,
+        lastRealLogMs: Long = 0L,
     ): Long {
         if (!enabled) return 0L
         if (intervalMs <= 0L) return 0L
@@ -72,6 +75,14 @@ internal object FuelingAlertScheduler {
         // fires at 40 / 60 / 80, not 30 / 50 / 70.
         val effectiveInitialDelayMs = if (cumLogged == 0) initialDelayMs else 0L
         if (currentTickAt < sessionStartMs + effectiveInitialDelayMs) return 0L
+        // A first log releases the filter above, which would resurrect the tick it had
+        // already dropped: "time to drink" seconds after drinking (field ride
+        // 0e6f39_c38ced). Such a tick stays dropped when the rider logged after it.
+        // Scoped to the initial-delay window so ordinary ticks behave exactly as before
+        // (a combined-field undo keeps the log timestamp); `..now` ignores a log stamped
+        // in the future by a clock step.
+        if (currentTickAt < sessionStartMs + initialDelayMs &&
+            lastRealLogMs in currentTickAt..now) return 0L
         return currentTickAt
     }
 

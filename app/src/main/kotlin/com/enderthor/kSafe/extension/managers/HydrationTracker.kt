@@ -703,6 +703,7 @@ class HydrationTracker(
         initialDelayMs = config.hydrationTimeInitialDelayMin * 60_000L,
         cumLogged = cumLoggedMl,
         now = now,
+        lastRealLogMs = lastRealLogMs,
     )
 
     /** See [evaluateDeficitAlert] return-value note — same contract on the time side. */

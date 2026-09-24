@@ -45,6 +45,8 @@ Event catalogue understood by this script:
   Fueling (carbs + hydration):
     CARB_START / CARB_LOG / CARB_UNDO / CARB_FIRE / CARB_PERIODIC
     HYD_START / HYD_LOG / HYD_UNDO / HYD_FIRE / HYD_PERIODIC
+    FUEL_QUIET  — a time-grid reminder was due but the 3-min quiet window
+                  swallowed it (a deficit alert had just fired). Never a fire.
 
   Emergency dispatch:
     EMERG_TRIG (EMERGENCY_TRIGGERED), ALERT_FAIL (ALERT_DELIVERY_FAILED),
@@ -233,6 +235,10 @@ class FileSummary:
         # production — the single FIRE row carries `source=deficit|time` instead.
         self.carb_fired_payloads: list[dict[str, str | float]] = []
         self.hydration_fired_payloads: list[dict[str, str | float]] = []
+        # Time-grid reminders swallowed by the 3-min quiet window (a deficit
+        # alert had just fired). Surfaced verbatim: `since_deficit_ms` is the
+        # only field evidence for whether QUIET_WINDOW_MS is the right number.
+        self.fueling_quieted_payloads: list[dict[str, str | float]] = []
         # Periodic 2-minute fueling snapshots — counted only (not surfaced row by
         # row to keep the per-file report terse).
         self.carb_periodic_count = 0
@@ -380,6 +386,10 @@ class FileSummary:
                 # Hydration tracker fired an alert — same contract as
                 # CARB_FIRE; `source` separates deficit from time.
                 self.hydration_fired_payloads.append({"elapsed_min": el_s / 60.0, **p})
+            elif ev == "FUEL_QUIET" or ev == "FUELING_ALERT_QUIETED":
+                # NOT a fire — nothing beeped. Kept out of *_fired_payloads so
+                # alert-fatigue counts stay honest.
+                self.fueling_quieted_payloads.append({"elapsed_min": el_s / 60.0, **p})
             elif ev == "CARB_PERIODIC" or ev == "FUELING_CARB_PERIODIC":
                 self.carb_periodic_count += 1
             elif ev == "HYD_PERIODIC" or ev == "FUELING_HYDRATION_PERIODIC":
@@ -583,6 +593,11 @@ def _print_per_file(summaries: list[FileSummary]):
         _print_payload_block(
             "HYDRATION FIRED", fs.hydration_fired_payloads,
             fields=("source", "deficit_ml", "since_log_min"),
+        )
+
+        _print_payload_block(
+            "FUELING TIME REMINDER QUIETED (not fired)", fs.fueling_quieted_payloads,
+            fields=("kind", "since_deficit_ms"),
         )
 
         # Fueling periodic + cadence-gate-suppressed counts — compact one-liners.

@@ -804,6 +804,7 @@ class CarbsTracker(
             sessionStartMs         = sessionStartMs,
             now                    = now,
             unackedFires           = deficitFiresSinceLog,
+            lastRealLogMs          = lastRealLogMs,
         )
         if (!fire) return false
         // Defer during an emergency: don't beep over the SOS, and DON'T stamp the cooldown,
@@ -880,14 +881,40 @@ class CarbsTracker(
         initialDelayMs = config.carbTimeInitialDelayMin * 60_000L,
         cumLogged = cumLoggedG,
         now = now,
+        lastRealLogMs = lastRealLogMs,
     )
 
     /** See [evaluateDeficitAlert] return-value note — same contract on the time side. */
     private fun evaluateTimeAlert(now: Long): Boolean {
         if (currentDueTimeTick(now) == 0L) return false
         // Defer during an emergency (see evaluateDeficitAlert) — not fired, tick not consumed.
+        // ORDER IS DELIBERATE: this runs BEFORE the quiet-window guard below, so a tick
+        // that was due mid-emergency is deferred rather than consumed. Do not flip it to
+        // "consume first" — that would silently eat a fueling reminder while the rider is
+        // in an SOS countdown, and it would break the invariant the deficit path also
+        // honours (an emergency defers, it never consumes). The deferred tick fires when
+        // the emergency clears, and the guard below runs again then: still inside the
+        // window → consumed, outside it → fires, which is >QUIET_WINDOW_MS after the
+        // deficit beep either way. Known cost: that overlap produces no FUEL_QUIET row.
         if (isEmergencyActive()) {
             Timber.d("Carb time alert due but emergency active — deferring")
+            return false
+        }
+        // Quiet window: a deficit alert moments ago already told the rider the
+        // actionable version of this message, so the grid reminder is noise.
+        // One-way by design — the deficit alert is never suppressed (see
+        // [FuelingAlertScheduler.suppressedByRecentAlert]). Consuming the tick
+        // (not deferring it) matches the same-tick "deficit wins" rule in [tick].
+        if (FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)) {
+            Timber.d("Carb time alert due but a deficit alert just fired — consuming tick (quiet window)")
+            calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                "kind=carb,since_deficit_ms=${now - lastDeficitAlertFireMs}"
+            }
+            // Consuming the tick also re-anchors `elapsedMinutesSinceLastTimeAlert`,
+            // so the NEXT time alert's `{elapsed}` counts from a reminder the rider
+            // never heard. Pre-existing from the v17 same-tick rule, widened by the
+            // window; not worth a second anchor field for one rendered token.
+            lastTimeAlertFireMs = now
             return false
         }
         val deficit = (cumBurnedG - cumLoggedG).toInt()

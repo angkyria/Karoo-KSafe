@@ -54,6 +54,10 @@ class HydrationTracker(
     // the wakeup count vs. the original 5 s. The deficit and time-alert thresholds
     // both have minute-level granularity downstream, so 15 s polling is fine.
     private val MONITOR_TICK_MS         = 15_000L
+    /** How long a Headwind humidity reading stays usable. Sized against Headwind's own
+     *  fetch cadence (it refreshes on movement of a few km, or hourly at worst), so a
+     *  healthy but quiet stream is not treated as stale. */
+    private val HUMIDITY_MAX_AGE_MS     = 75L * 60_000L
 
     /** Movement gate + GPS-stale window read from [CarbIntegrator] — the canonical
      *  home for these constants post-v18.1. Keeps both trackers (and
@@ -157,6 +161,14 @@ class HydrationTracker(
     @Volatile private var lastWeightKg: Double? = null
     @Volatile private var lastAmbientTempC: Double? = null
     @Volatile private var lastHumidityPct: Int? = null
+    /** Wall-clock ms of the last humidity update, or 0 if none this session.
+     *
+     *  Humidity comes only from the Headwind extension — there is no onboard sensor to fall
+     *  back to — so without an expiry a single reading was used by the sweat estimator
+     *  forever: past the stream dying, past the end of the ride, and into the next ride in
+     *  the same process. [SweatEstimator] already accepts a null humidity and degrades its
+     *  confidence, which is the honest answer once the reading is old. */
+    @Volatile private var lastHumidityAtMs: Long = 0L
     /** Most recent estimator output, exposed via [getStatus] for logging / future UI. */
     @Volatile private var lastSweatRateMlHr: Double = 0.0
     @Volatile private var lastSweatConfidence: SweatConfidence = SweatConfidence.LOW
@@ -367,7 +379,21 @@ class HydrationTracker(
         if (!c.isFinite()) return
         lastAmbientTempC = c
     }
-    fun updateHumidity(pct: Int)      { lastHumidityPct = pct }
+    fun updateHumidity(pct: Int) {
+        lastHumidityPct = pct
+        lastHumidityAtMs = System.currentTimeMillis()
+    }
+
+    /** Humidity, or null once it is older than [HUMIDITY_MAX_AGE_MS]. Read at the point of
+     *  use rather than expired on a timer, so no extra tick is needed. */
+    private fun freshHumidityPct(): Int? {
+        val stamp = lastHumidityAtMs
+        if (stamp == 0L) return null
+        val age = System.currentTimeMillis() - stamp
+        // Non-negative age required: a wall-clock step backwards would otherwise read a
+        // future stamp as maximal freshness and pin a stale value indefinitely.
+        return if (age in 0 until HUMIDITY_MAX_AGE_MS) lastHumidityPct else null
+    }
 
     /**
      * Log a single tap on slot 1 or 2. Adds the configured millilitres to the cumulative
@@ -526,7 +552,7 @@ class HydrationTracker(
         powerW       = lastPowerW?.takeIf { lastPowerUpdateMs > 0L && now - lastPowerUpdateMs <= SENSOR_STALE_MS },
         weightKg     = lastWeightKg,
         ambientTempC = lastAmbientTempC,
-        humidityPct  = lastHumidityPct,
+        humidityPct  = freshHumidityPct(),
     )
 
     private fun tick() {
@@ -623,6 +649,7 @@ class HydrationTracker(
             sessionStartMs         = sessionStartMs,
             now                    = now,
             unackedFires           = deficitFiresSinceLog,
+            lastRealLogMs          = lastRealLogMs,
         )
         if (!fire) return false
         // Defer during an emergency: don't beep over the SOS, and DON'T stamp the cooldown,
@@ -676,14 +703,40 @@ class HydrationTracker(
         initialDelayMs = config.hydrationTimeInitialDelayMin * 60_000L,
         cumLogged = cumLoggedMl,
         now = now,
+        lastRealLogMs = lastRealLogMs,
     )
 
     /** See [evaluateDeficitAlert] return-value note — same contract on the time side. */
     private fun evaluateTimeAlert(now: Long): Boolean {
         if (currentDueTimeTick(now) == 0L) return false
         // Defer during an emergency (see evaluateDeficitAlert) — not fired, tick not consumed.
+        // ORDER IS DELIBERATE: this runs BEFORE the quiet-window guard below, so a tick
+        // that was due mid-emergency is deferred rather than consumed. Do not flip it to
+        // "consume first" — that would silently eat a fueling reminder while the rider is
+        // in an SOS countdown, and it would break the invariant the deficit path also
+        // honours (an emergency defers, it never consumes). The deferred tick fires when
+        // the emergency clears, and the guard below runs again then: still inside the
+        // window → consumed, outside it → fires, which is >QUIET_WINDOW_MS after the
+        // deficit beep either way. Known cost: that overlap produces no FUEL_QUIET row.
         if (isEmergencyActive()) {
             Timber.d("Hydration time alert due but emergency active — deferring")
+            return false
+        }
+        // Quiet window: a deficit alert moments ago already told the rider the
+        // actionable version of this message, so the grid reminder is noise.
+        // One-way by design — the deficit alert is never suppressed (see
+        // [FuelingAlertScheduler.suppressedByRecentAlert]). Consuming the tick
+        // (not deferring it) matches the same-tick "deficit wins" rule in [tick].
+        if (FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)) {
+            Timber.d("Hydration time alert due but a deficit alert just fired — consuming tick (quiet window)")
+            calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                "kind=hyd,since_deficit_ms=${now - lastDeficitAlertFireMs}"
+            }
+            // Consuming the tick also re-anchors `elapsedMinutesSinceLastTimeAlert`,
+            // so the NEXT time alert's `{elapsed}` counts from a reminder the rider
+            // never heard. Pre-existing from the v17 same-tick rule, widened by the
+            // window; not worth a second anchor field for one rendered token.
+            lastTimeAlertFireMs = now
             return false
         }
         // See CarbsTracker.evaluateTimeAlert — time alert is interval-driven,

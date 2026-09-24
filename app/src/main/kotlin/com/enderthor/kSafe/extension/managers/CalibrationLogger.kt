@@ -90,7 +90,7 @@ class CalibrationLogger(
          * silence-window orientation showed the bike within the upright cone
          * (`0 ≤ angle < veto cone` — NOT the 45° uprightAngleThresholdDegrees) → benign
          * stop, not a crash. The cone depends on the regime: `gapVetoUprightAngleDeg`
-         * (25°) for GAP (delayed stop, `gap_ms > delayedStopGapMs` — rider rode on, so
+         * (37°) for GAP (delayed stop, `gap_ms > delayedStopGapMs` — rider rode on, so
          * lenient) vs the stricter `promptVetoUprightAngleDeg` (15°) for PROMPT (prompt
          * stop, more crash-like). The `veto_thr` payload field records the cone actually
          * in force for that row's regime. Counting these
@@ -261,6 +261,17 @@ class CalibrationLogger(
         FUELING_HYDRATION_FIRED("HYD_FIRE"),
         /** Periodic 2-minute snapshot of hydration tracker state. */
         FUELING_HYDRATION_PERIODIC("HYD_PERIODIC"),
+        /**
+         * A TIME-grid fueling reminder was due but swallowed by the quiet window
+         * (`FuelingAlertScheduler.suppressedByRecentAlert`) — a deficit alert had
+         * fired less than `QUIET_WINDOW_MS` earlier. Deliberately NOT logged as
+         * `*_FIRED`: nothing beeped, and a consumer counting fires must not be
+         * inflated (same reasoning as [CRASH_GATE_SUPPRESSED] vs [CRASH_CONFIRMED]).
+         * Payload carries `kind=` (carb/hyd) and `since_deficit_ms=`, which is the
+         * whole point of the row: the 3-min window was picked from three field
+         * samples, and only these rows say whether it is the right number.
+         */
+        FUELING_ALERT_QUIETED("FUEL_QUIET"),
         // ─── FIT export (added 2026-05) ──────────────────────────────────────
         /**
          * Karoo invoked `startFit` — the FIT developer-field writer is now active. Lists
@@ -543,6 +554,23 @@ class CalibrationLogger(
      * Main dispatcher for tens of milliseconds. Use [disableAsync] instead.
      */
     fun disable() {
+        // Already-disabled guard. `KSafeExtension.onDestroy` calls this unconditionally,
+        // so without it every teardown — on the ~all installs that never enable calibration
+        // logging — formatted a LOG_END row and appended it to a file that has no session
+        // in it. `addEntryDirect` writes regardless of [isEnabled] by design (it is how
+        // LOG_END gets past the flag we just cleared), so the guard belongs here.
+        //
+        // It must still FLUSH on the way out. [disableAsync] (the mid-ride settings path)
+        // clears `isEnabled` and adds LOG_END synchronously but dispatches the write to
+        // IO on a scope that is a child of the extension's job. If the service is destroyed
+        // before that coroutine is dispatched, `onDestroy`'s `job.cancel()` kills it — and
+        // a bare `return` here would drop up to 500 buffered rows plus the LOG_END that the
+        // async path had already queued. `flush()` early-returns on an empty buffer, so this
+        // costs nothing on the common never-logged teardown.
+        if (!isEnabled) {
+            flush()
+            return
+        }
         isEnabled = false
         flushJob?.cancel()
         flushJob = null
@@ -1070,8 +1098,17 @@ class CalibrationLogger(
             uploadedChunkCount++
             // Log a marker row so the next chunk's CSV self-identifies as a continuation.
             // Done OUTSIDE the fileLock — addEntryDirect only touches the in-memory buffer.
-            addEntryDirect(Event.LOGGER_START,
-                "logging_resumed_after_periodic_send,install_id=$installId,session=$sessionId,uploaded_lines=$uploadedLineCount,uploaded_chunks=$uploadedChunkCount")
+            //
+            // Only while the session is still LIVE. The "Logging disabled" drain also lands
+            // here, after LOG_END has been written and the file fully sent; queueing a
+            // continuation row for a session that has ended leaves it in the buffer for the
+            // next flush to append — resurrecting a drained, HEADER-only file into a sendable
+            // one and producing a phantom session that gets uploaded again. There is no next
+            // chunk to self-identify when logging is off, so the marker has no purpose here.
+            if (isEnabled) {
+                addEntryDirect(Event.LOGGER_START,
+                    "logging_resumed_after_periodic_send,install_id=$installId,session=$sessionId,uploaded_lines=$uploadedLineCount,uploaded_chunks=$uploadedChunkCount")
+            }
             dropped
         } catch (e: Exception) {
             Timber.w(e, "CalibrationLogger: truncate after send failed")

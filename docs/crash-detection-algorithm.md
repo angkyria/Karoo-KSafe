@@ -1,6 +1,6 @@
 # KSafe — Crash Detection Algorithm
 
-> **Version:** May 2026 (revision 7 — IMPACT-phase on-side relaxation)
+> **Version:** September 2026 (2.2.3 — deferred staleness verdict, monotonic vigilance window, inverted VIGIL_SHADOW probe)
 > **File:** `CrashDetectionManager.kt`
 > **Sensors:** Android SensorManager (accelerometer + gyroscope) + Karoo SDK (speed, cadence, grade)
 
@@ -315,7 +315,9 @@ val mag = sqrt(silOrientX² + silOrientY² + silOrientZ²)
 val readInMotion = (mag < onSideTrustMinAccel)   // 8.83 ≈ 0.90 × GRAVITY
 ```
 
-If `readInMotion = true` the confirm is NOT fired immediately. Instead, `movingVigilance.arm(now)` is called and the confirm becomes a **pending verification**.
+If `readInMotion = true` the confirm is NOT fired immediately — **provided the speed reading that diverted it was itself trustworthy**. If `isSpeedFreshForVigilance` is already false on the arming sample the window is never opened: a `VIGIL_ARM` row is still logged (with `armed=false`, because its `spd_age_ms` is the number the guard is measured by) and the confirm escalates immediately, exactly as the pre-2.2.3 rule did. Otherwise `movingVigilance.arm(clock.monotonicMs())` is called and the confirm becomes a **pending verification**.
+
+The guard exists because a confirm taken on an already-stale value is indistinguishable, at that instant, from a crash that killed the speed feed — and the deferred rule would clear it on a single late sample arriving inside the window. Corpus-wide, three arms carried `spd_age_ms` of 5.0 / 5.6 / 7.9 s (`67c8ff_248d4c`, `b49412_bbfcb9`, `67c8ff_9e08f3`). It costs nothing measured: every escalate in the 2026-09-12 sweep armed fresh (356 / 857 / 2424 / 2739 ms), including `bd5fc1_5d1905`, the only one whose alert actually reached a contact.
 
 If `readInMotion = false` (magnitude close to gravity → bike was at rest → angle is trustworthy) the confirm is routed directly to `confirmCrash` as before.
 
@@ -323,15 +325,38 @@ If the silence-window orientation is `NaN` (too few samples — cold start, brie
 
 ### The verification window
 
-Once armed, `MovingVigilance.onTick(now, speedKmh, speedFresh)` is called on every subsequent sensor sample (~50 Hz). It resolves to one of three outcomes:
+Once armed, `MovingVigilance.onTick(nowMono, speedKmh, speedFresh)` is called on every subsequent sensor sample (~50 Hz, delivered in ~5-sample bursts every ~100 ms) **and on every speed emission** (~1 Hz) — see "Two independent drivers for the window" below. It resolves to one of three outcomes:
 
 | Outcome | Condition | Action |
 |---------|-----------|--------|
-| `CLEAR` | `speedFresh && speedKmh ≥ movingVigilanceSpeedKmh` for the full `movingVigilanceWindowMs` (4 000 ms) | Log `VIGIL_CLEAR`. Disarm. No alert. Rider was continuously, freshly riding at ≥ 8 km/h → the earlier accel pattern was a riding FP. |
-| `ESCALATE` | `!speedFresh` OR `speedKmh < movingVigilanceSpeedKmh` at ANY sample before the window closes | Log `VIGIL_ESCALATE`. Disarm. Route to `confirmCrash` — the same cancellable countdown as a normal detection. |
-| `PENDING` | Window has not yet closed and every sample so far was fast+fresh | Continue watching. |
+| `CLEAR` | `speedKmh ≥ movingVigilanceSpeedKmh` for the full `movingVigilanceWindowMs` (4 000 ms) AND `speedFresh` when it closes | Log `VIGIL_CLEAR`. Disarm. No alert. Rider held ≥ 8 km/h throughout and the GPS was live at the end → the earlier accel pattern was a riding FP. |
+| `ESCALATE` | `speedKmh < movingVigilanceSpeedKmh` at ANY sample (immediate), OR `!speedFresh` **when the window closes** (a confirm whose speed is already stale never enters the window — see above, `reason=stale_at_arm`) | Log `VIGIL_ESCALATE`. Disarm. Route to `confirmCrash` — the same cancellable countdown as a normal detection. |
+| `PENDING` | Window has not yet closed and no sample has breached the speed floor | Continue watching. |
 
-**FN-safe by construction**: the only path that suppresses an alert is `CLEAR`, which requires every single sensor sample in a 4 s window to show the rider is actively moving above 8 km/h with fresh GPS. Any doubt (one slow sample, one stale GPS tick, a GPS drop, or any pause) escalates. The accelerometer is NOT consulted to clear — it is the source of the untrustworthy reading; consulting it again would be circular.
+The two doubts are deliberately **not** treated alike. A speed-floor breach is positive evidence that the bike is stopping, so it escalates on the sample that sees it and a real fall keeps its immediate countdown. Stale speed is only a *measurement* doubt — the GPS value went quiet — so its verdict waits for window end, by which point a momentary freeze has usually resolved itself.
+
+**FN-safe against a PERSISTING speed loss — not against a transient one.** The only path that suppresses an alert is `CLEAR`, which requires the rider to hold above 8 km/h for every sample of the 4 s window *and* to have fresh GPS when it closes. A slow sample, a GPS drop that persists to the end of the window, or any pause all escalate. The accelerometer is NOT consulted to clear — it is the source of the untrustworthy reading; consulting it again would be circular.
+
+Be precise about what deferring the staleness verdict cost, because the earlier wording of this section ("FN-safe by construction") was wrong: a GPS that goes quiet and recovers *before* the window closes now clears where it used to escalate. **That is the change's purpose, and it is a spent false-negative budget, not a free win.** In the 2026-09-06 batch the budget was spent entirely on false positives — all 6 flipped escalates were rider-cancelled within 3–9 s with the rider back above 18 km/h — but that is a measurement of one batch, not a guarantee. The residual bet is that a downed rider does not sustain a *reported* ≥ 8 km/h across a whole 4 s window; a GPS frozen at a pre-crash value that reacquires inside the window would defeat it. Anyone retuning `movingVigilanceWindowMs` or `movingVigilanceSpeedFreshMs` is spending that budget and should re-measure it.
+
+### Two independent drivers for the window (2.2.3)
+
+`MovingVigilance.onTick` is driven from BOTH the accelerometer sample path and
+`CrashDetectionManager.updateSpeed`, and the window's duration is measured on the **monotonic**
+clock (`clock.monotonicMs()`), never the wall clock the samples are stamped with.
+
+Why two drivers: `onTick` deliberately never consults the accelerometer — it needs only speed and
+freshness — but while the sensor path was its only caller, a sensor/HAL stall with no ride-state
+transition left an armed window unresolved forever. No `stop()`, no pause, so none of the
+escalate-on-abandon paths below fire either: a confirmed crash that never reaches its countdown.
+Deferring the staleness verdict is what made that reachable, because the old rule escalated on the
+arming tick itself when that tick was already stale. Two guards now bound it. First, an armed window owns a real deadline: `armVigilanceDeadline` launches a monotonic timer at arm that drives the window once shortly after it would elapse, so a window both feeds abandon still resolves — and resolves fail-safe, since a window reaching its end with no fresh speed can only ESCALATE. The timer is cancelled on every reset path and a late fire over an already-resolved window is a no-op. Second, the arm-time staleness guard above means a confirm that was already stale never becomes pending at all. The SPEED stream is the independent second
+clock and is delivered on every emission (identical values are not filtered upstream), so it keeps
+the window advancing even when the GPS value is frozen — precisely when the verdict matters.
+
+Residual gap: accelerometer AND speed stream both silent. Not covered by design — at that point the
+device is inert. Both drivers run on the main looper, so no synchronisation is needed and a
+duplicated step is harmless (every non-`PENDING` outcome disarms before returning).
 
 ### Escalate-on-abandon (pause or ride stop while armed)
 
@@ -339,41 +364,122 @@ If a Karoo ride pause arrives while `movingVigilance.isArmed`, the vigilance win
 
 `stop()` takes the same route for the same reason — a ride ending mid-verification is abandonment, not evidence of safety — and logs `VIGIL_ESCALATE` with `reason=ride_stop`. When reading logs, treat both `reason=` variants as *abandonment* escalations: unlike the tick path they carry no speed verdict, so they must not be counted alongside the staleness/floor escalates when judging the escalate rule.
 
+### Known gap: an abandonment escalate can be lost at service teardown
+
+**Accepted, not fixed (2026-09-06).** `stop()` escalates an armed window via
+`confirmCrash`, which ends in `scope.launch { onCrashDetected() }`. The scope is
+`Dispatchers.Main` (not `Main.immediate`), so that block is QUEUED on the main looper. During
+`KSafeExtension.onDestroy` the caller is already on that looper, so the block cannot run before
+`onDestroy` returns — and `onDestroy` reaches `job.cancel()` first, cancelling it. The confirmed
+crash never starts its countdown. `emergencyManager.stopAll()` also runs before the cancel, so
+merely reordering those two lines would not fix it: an emergency confirmed at that instant does not
+survive teardown at all. KSafe's emergency recovery record is only written once a countdown has
+STARTED, so there is nothing to recover from either — the gap sits in the window before it.
+
+**Why it is not fixed.** It needs a real crash confirmed mid-motion AND the service being destroyed
+inside the ~4 s vigilance window. The candidate fixes each cost more than the risk: switching the
+scope to `Main.immediate` changes every `launch` in the service to inline execution and can expose
+unrelated reentrancy; a properly robust fix means persisting the pending confirmation at ARM time,
+with its own cleanup and recovery-at-startup logic. Revisit if the field signature below ever
+appears.
+
+**Field signature to watch for.** The `VIGIL_ESCALATE` row IS written even when the escalate is
+lost: it lands in the in-memory buffer before the teardown, and `CalibrationLogger.disable()` runs a
+SYNCHRONOUS `flush()` later in `onDestroy`. So the loss is detectable as:
+
+> `VIGIL_ESCALATE` with `reason=ride_stop` / `manual_pause` / `session_restart`, **not** followed by
+> an `EMERG_TRIG` within a few seconds.
+
+Baseline: across the whole 2026-09-06 corpus (1190 sessions, 4365 h) there are **zero** abandonment
+escalates of any kind, lost or delivered — the precondition has never once occurred in the field.
+
 ### Calibration events
 
 | Event tag | When |
 |-----------|------|
 | `VIGIL_ARM` | Arm: trust gate tripped. Fields: `sil_mag`, `trust_min`, `speed`, `window_ms`, `spd_age_ms`, `floor_kmh`, `fresh_thr_ms`. |
-| `VIGIL_CLEAR` | Clear: rider sustained ≥ 8 km/h fresh for the full window. Fields: `speed`, `window_ms`, `spd_age_ms`. |
+| `VIGIL_CLEAR` | Clear: rider held ≥ 8 km/h for the full window and speed was fresh at its close. Fields: `speed`, `window_ms`, `spd_age_ms`. |
 | `VIGIL_ESCALATE` | Escalate to countdown. Fields: `speed`, `gps_stale`, `spd_age_ms` (tick path); `reason=manual_pause` (manual-pause path); `reason=ride_stop` (ride-end path). The two `reason=` variants carry no `spd_age_ms` — they are abandonment escalations, not speed verdicts. |
-| `VIGIL_SHADOW` | **Diagnostic only — no behaviour.** Emitted once per `VIGIL_ARM` at `arm + window_ms`, whatever the real outcome was (it still fires after an early `ESCALATE` disarmed the vigilance). Fields: `would_be` (`CLEAR`/`ESCALATE`), `floor_breach`, `speed`, `spd_age_ms`, `gps_stale`. See "Open question: early escalate on a frozen speed value" below. |
+| `VIGIL_SHADOW` | **Diagnostic only — no behaviour.** Emitted once per `VIGIL_ARM` at `arm + window_ms`, whatever the real outcome was (it still fires after an early `ESCALATE` disarmed the vigilance) — EXCEPT when a ride stop, a manual pause, or an at-rest confirm preempting the window clears the pending deadline first, so an arm resolved that way has no shadow row. Treat those as censored observations when reconciling arm counts, not as missing data. Since 2.2.3 it shadows the **replaced** rule (escalate on the first below-floor OR not-fresh sample), so `real=CLEAR` + `would_be=ESCALATE` marks one flip — the false-negative budget being spent. Fields: `would_be` (`CLEAR`/`ESCALATE`), `rule=legacy_immediate`, `floor_breach`, `stale_seen`, `speed`, `spd_age_ms`, `gps_stale`. |
 
 `spd_age_ms` = age of the last speed **value change** (`now - speedLastChangeMs`). It separates the two
 escalate causes that `speed` alone cannot: a genuine collapse below `floor_kmh`, versus a speed value
 frozen past `fresh_thr_ms` while the rider is still riding fast.
 
-### Open question: early escalate on a frozen speed value
+### Resolved: early escalate on a frozen speed value (2026-09-06)
 
-`ESCALATE` fires on the FIRST sample that is stale-or-slow, so a rider holding a dead-steady speed can
-escalate at ~0 s — the vigilance window never actually observes anything. Field evidence (2026-07-25
-sweep, 12 `VIGIL_ARM` across the whole corpus): 7 `CLEAR`, 5 `ESCALATE`, of which **1 was a true floor
-breach (3.6 km/h) and 4 were staleness at 20–23.5 km/h, all rider-cancelled**. Two of those escalated at
-0.0 s / 0.2 s.
+`ESCALATE` used to fire on the FIRST sample that was stale-or-slow, so a rider holding a dead-steady
+speed could escalate at ~0 s — the vigilance window never actually observed anything. The candidate rule
+was *"escalate immediately only on a floor breach; defer the STALENESS verdict to window end"*, and
+`VIGIL_SHADOW` was shipped in 2.2.2 to record that verdict without acting on it.
 
-The candidate rule is *"escalate immediately only on a floor breach; defer the STALENESS verdict to
-window end"*. It is **not implemented** — whether it would have suppressed those FPs depends on whether
-a fresh speed sample arrived before the 4 s mark, which the logs did not record. `VIGIL_SHADOW` records
-exactly that verdict without acting on it, so the next sweep can decide with data:
+**The 2026-09-06 sweep decided it.** v2.2.2 field data over 516 h and 31 installs: 44 `VIGIL_ARM`,
+resolving as 32 `VIGIL_CLEAR` + 12 `VIGIL_ESCALATE`. **43** of those arms carry a usable
+`VIGIL_SHADOW` pairing:
 
-- `VIGIL_ESCALATE` (`spd_age_ms > fresh_thr_ms`) + `VIGIL_SHADOW would_be=CLEAR` → the deferred rule
-  would have suppressed that FP.
-- `would_be=ESCALATE` → the speed value really was frozen; the early exit cost nothing and the problem
-  lies in the change-gated freshness test itself, not in when it is evaluated.
+| Real outcome | `would_be` | Count |
+|---|---|---|
+| `CLEAR` | `CLEAR` | 31 |
+| `ESCALATE` | `ESCALATE` | 6 |
+| `ESCALATE` | `CLEAR` | **6** |
+| `CLEAR` | `ESCALATE` | 0 |
 
-The probe models the candidate rule faithfully, including its immediate-escalate branch: `floor_breach`
-is latched if speed drops below `floor_kmh` at ANY sample of the window, and forces `would_be=ESCALATE`
-regardless of how fresh speed looks at the end. Without that latch the probe would over-report `CLEAR`
-— biasing the very decision it exists to inform.
+The 44th arm (install `b49412`, session `bbfcb9`) emitted no `VIGIL_SHADOW` row at all — a truncated
+log, not a verdict — so it is unclassifiable rather than omitted. Note the empty fourth row: **no**
+arm was observed where the deferred rule escalates and the old one cleared.
+
+Half of the escalates were avoidable, and no escalate that the shadow judged `ESCALATE` would have
+been lost. Notably 4 of those 6 had `spd_age_ms` *below* `fresh_thr_ms` (529/1137/1348/2128 ms), so the
+fault was the timing of the verdict, not the change-gated freshness test itself.
+
+The deferred rule is now **implemented** in `MovingVigilance.onTick`.
+
+**`VIGIL_SHADOW` is now tautological and must be changed or dropped before it is trusted again.** The
+probe computes `wouldBe = freshNow && !floorBreached`, which is exactly the rule that now ships, so
+from this release on it can only ever agree with reality: it will report 100 % agreement forever and
+confirm nothing. It also means the sentence "no escalate the shadow judged `ESCALATE` would be lost"
+is true *by construction* and was never evidence about false negatives.
+
+**It has therefore been inverted** (2.2.3): the probe now shadows the OLD rule
+(`!speedFresh || speedKmh < floor`, each latched at first occurrence across the window). A
+`real=CLEAR / would_be=ESCALATE` row marks precisely one flip — an alert the old rule would have
+raised and this one does not — which is the false-negative budget being spent, and the only number
+worth watching now. **What the probe measures, precisely.** Its latches are fed by BOTH drivers, while the legacy rule it models ran only on the sensor path. So it is the legacy *predicate* evaluated under the current dual driver, NOT a faithful replay of what the deployed pre-2.2.3 build would have done. The difference is one-directional: extra sampling points can only set a sticky latch that the sensor-only rule might not have seen (e.g. a speed emission latching `stale_seen` during an accelerometer stall), so the headline `real=CLEAR / would_be=ESCALATE` count is an UPPER bound on the false-negative budget, never an underestimate. Read it as a ceiling, and do not quote it as "alerts the old build would have raised".
+
+The converse (`real=ESCALATE / would_be=CLEAR`) should not occur: anything the new rule escalates on
+is also latched by the probe. The one path that could produce it is `onTick`'s negative-elapsed
+fail-safe, which the probe does not model — unreachable now that both the window and the probe
+deadline are measured on the MONOTONIC clock (`clock.monotonicMs()`), which cannot step. If a sweep
+shows one anyway, treat it as a bug — either a clock anomaly reached the vigilance after all, or the
+probe and the rule have drifted apart.
+
+Note this makes the next sweep's numbers NOT comparable with the 2026-09-06 table above, which was
+produced by the probe in its old orientation.
+
+**Accepted cost.** For a crash where the GPS value freezes at a non-zero reading, no floor breach is
+ever *observed*, so escalation now always waits for window close: with `movingVigilanceSpeedFreshMs`
+3 000 ms and a 4 000 ms window, that path used to fire between 0 s and 3 s and now fires at 4 s — up to
+~4 s later, against a countdown of 30 s or more. Partly offset by the at-rest preempt in
+`CrashDetectionManager`: the window now stays open longer, so a bike that comes to rest inside it
+produces a trustworthy at-rest confirm that preempts the vigilance and fires immediately.
+
+The trust gate itself needs no change — it already rejects a silence orientation whose vector magnitude
+is below `onSideTrustMinAccel` (8.83 m/s² ≈ 0.90 g). The same sweep confirmed it fires exactly where it
+should: of 44 suspect confirms in v2.2.2 it diverted all 44, and 30 of them never reached `EMERG_TRIG`.
+(That 30 is a different measurement from the 31 `CLEAR`/`CLEAR` rows above, so the two do not have to
+agree: it counts suspect confirms with no `EMERG_TRIG` within 30 s. The 14 that did include the 12
+vigilance escalates plus 3 confirms that themselves cleared but sit inside the 30 s window of an
+emergency raised by a LATER arm — sessions `612453` (×2) and `2a84a7` chain several confirms, so
+per-confirm attribution overlaps there.)
+
+Since 2.2.3 the probe models the **legacy** (pre-2.2.3) rule faithfully, including its
+immediate-escalate behaviour, via two sticky latches: `floor_breach` is latched if speed drops below
+`floor_kmh` at ANY sample of the window, and `stale_seen` if speed is not genuinely fresh at any
+sample. Either one forces `would_be=ESCALATE` regardless of how things look at the end, because the
+legacy rule escalated on the FIRST such sample — a dip or a freeze that recovered still means it
+would have escalated. Without the latches the probe would over-report `CLEAR`, biasing the very
+number it exists to produce. Both latches are cleared on every path that resolves or abandons an arm
+(window close, ride stop, manual pause, re-arm, and the at-rest confirm that preempts the window).
 
 ### Tuning knobs (`Thresholds.kt`)
 
@@ -527,7 +633,7 @@ Captures the scenario where the rider falls and is unconscious at low speed (e.g
 | SILENCE_CHECK required duration — upright or delayed stop (GPS stale) | 20,000ms |
 | Delayed-stop gap threshold (`delayedStopGapMs`) | 8,000ms |
 | Upright angle threshold (`uprightAngleThresholdDegrees`) | 45° |
-| GAP-regime upright veto cone (`gapVetoUprightAngleDeg`, R6-F) | 25° |
+| GAP-regime upright veto cone (`gapVetoUprightAngleDeg`, R6-F) | 37° |
 | PROMPT-regime upright veto cone (`promptVetoUprightAngleDeg`, R6-G) | 15° |
 | Prompt-stop upright veto gyro gate (`nonGapUprightVetoMaxGyroRadS`, R6-G) | 3.0 rad/s |
 | Pre-impact reference window (`WINDOW_MS`) | 2,000ms |
@@ -575,7 +681,7 @@ Everything else tolerates slightly stale reads across threads (e.g. an accelerom
 | ID | Change | Status |
 |----|--------|--------|
 | **R8-A** | **Moving-vigilance trust gate (`onSideTrustMinAccel = 8.83 m/s²`).** An on-side SILENCE_CHECK confirm is only fired immediately when the averaged in-silence acceleration magnitude is close to gravity (‖sil‖ ≥ 8.83 m/s²), indicating the orientation angle was sampled at rest. Field FPs showed magnitudes of 8.49 and 1.78 m/s² — sampled mid-motion, making the computed angle untrustworthy. Below the floor, the confirm is diverted into the moving-vigilance window (R8-B) rather than directly firing. If the orientation samples are `NaN` (too few) the check returns false and the confirm proceeds as today — cannot assess → FN-safe default. | ✅ Implemented (`CrashDetectionManager.confirmReadInMotion`, `Thresholds.onSideTrustMinAccel`) |
-| **R8-B** | **Moving-vigilance window (`movingVigilanceWindowMs = 4 000 ms`, `movingVigilanceSpeedKmh = 8.0 km/h`).** When the trust gate trips, `MovingVigilance.arm(now)` is called. On every subsequent sensor sample (~50 Hz), `onTick` checks: if speed is fresh AND ≥ 8 km/h for the full 4 s window → `CLEAR` (log `VIGIL_CLEAR`, no alert — rider was continuously riding, reading was a FP); if any sample has stale GPS OR speed < 8 km/h → `ESCALATE` (log `VIGIL_ESCALATE`, route to the normal cancellable countdown). The accelerometer is NOT consulted for the clear decision — it is the source of the untrustworthy reading. Calibration events: `VIGIL_ARM` / `VIGIL_CLEAR` / `VIGIL_ESCALATE`. | ✅ Implemented (`MovingVigilance.kt`) |
+| **R8-B** | **Moving-vigilance window (`movingVigilanceWindowMs = 4 000 ms`, `movingVigilanceSpeedKmh = 8.0 km/h`).** When the trust gate trips, `MovingVigilance.arm(clock.monotonicMs())` is called — the window measures its own duration on the monotonic clock, so a wall-clock step cannot shorten or extend it (2.2.3). On every subsequent sensor sample (~50 Hz), `onTick` checks speed. **Superseded in 2.2.3** — as shipped in R8 any sample with stale GPS OR speed < 8 km/h escalated immediately; the staleness half of that is now deferred to window end (see "Resolved: early escalate on a frozen speed value"). The accelerometer is NOT consulted for the clear decision — it is the source of the untrustworthy reading. Calibration events: `VIGIL_ARM` / `VIGIL_CLEAR` / `VIGIL_ESCALATE`. | ✅ Implemented (`MovingVigilance.kt`) |
 | **R8-C** | **Escalate-on-abandon: armed vigilance window on pause or ride stop.** When a Karoo ride pause **or a ride stop** arrives while `movingVigilance.isArmed`, the window is never silently dropped. Manual pause and autopause are not reliably distinguishable, a ride ending mid-verification is abandonment rather than evidence of safety, and a downed rider cannot be assumed conscious — so `confirmCrash(IMPACT_CONFIRMED, alreadyLogged=true)` is called before `movingVigilance.reset()` on both paths. Log event: `VIGIL_ESCALATE` with `reason=manual_pause` (pause path) or `reason=ride_stop` (stop path); both are abandonment escalations carrying no speed verdict, so log analysis must not count them alongside the tick-path escalates. Autopause does not reach the manual branch of `onPause` and is unaffected (the in-flight state machine is preserved and the vigilance window continues ticking). | ✅ Implemented (`CrashDetectionManager.onPause`, `CrashDetectionManager.stop`) |
 
 ### Revision 7 — May 2026 (auto-resume residual + IMPACT-phase on-side relaxation)
@@ -599,8 +705,8 @@ Everything else tolerates slightly stale reads across threads (e.g. an accelerom
 | **R6-C** | **Orientation regime for prompt stops.** If the gap is ≤ 8 s: angle ≥ 45° → on-side → 4.5 s (fast alert); angle < 45° → still upright → 20 s (wait); invalid reference → 4.5 s (conservative). `delayedStopGapMs = 8 000 ms` added to `Thresholds`. | ✅ Implemented |
 | **R6-D** | **Removed learned-baseline machinery.** `feedBaselineSample`, `isBaselineReady`, `baselineVector`, the EMA cap logic, the cruising-speed/std-dev learning gate in the facade, and the `ORIENTATION_BASELINE` / `ORIENT_BASE` calibration event are all deleted. `baselineMinSamples` and `baselineCruisingMinSpeedKmh` removed from `Thresholds`. | ✅ Removed |
 | **R6-E** | **Calibration log fields updated.** `SILENCE_ENTER` gains `gap_ms`, `pre_valid`, `pre_x/y/z`. `CRASH_CONFIRMED` gains `gap_ms`, `pre_impact_angle`, `decided_by` (`GAP` / `ORIENT_UPRIGHT` / `ORIENT_ONSIDE` / `UNKNOWN`). `IMPACT_TIMEOUT` gains `pre_valid`. `ORIENT_BASE` event removed. | ✅ Implemented |
-| **R6-F** | **GAP-regime upright veto.** The gap regime (R6-B) was the only confirm path that ignored orientation — it confirmed on 20 s of stillness alone. A real-world FP (gravel bump → coast to a stop, gap 9.9 s → stand motionless and **upright** 20 s) confirmed as a crash. At the confirm gate, when `firstSilenceGapMs > delayedStopGapMs`, the silence-window orientation angle is now computed: if `0 ≤ angle < gapVetoUprightAngleDeg` the confirm is **vetoed** and the machine returns to MONITORING. The GAP-regime veto cone is **25°** (`gapVetoUprightAngleDeg`) — NOT the 45° `uprightAngleThresholdDegrees` (which is a *timing* threshold where both sides still confirm). Originally introduced at 15°; widened to 25° after field evidence (session `2ab57f`): a settled bike at ~18.6° produced a false positive with the old 15° cone. Domain rationale: a real crash always tips the bike well past 25°; vetoing up to 25° in the GAP regime has negligible FN risk. A bike merely tilted to 25–45° is left to confirm. Non-upright (`angle ≥ 25°`) and not-computable (`-1.0`: invalid ref / too few samples) still confirm — the on-side paths and the no-orientation-data safety net are untouched. New `GAP_UPRIGHT_VETO` (`GAP_VETO`) calibration event records each veto. Regression seeds in `CrashStateMachineTest`: upright (~0°) vetoes incl. a real-data replay of the FP session; ~24° (inside 25° cone) vetoes; ~26° (outside 25° cone) confirms; ~30° confirms; on-side and invalid-ref still confirm. | ✅ Implemented |
-| **R6-G** | **Prompt-stop (non-gap) upright veto.** R6-F's "lever to revisit" (below), implemented after the 2026-06-03 session `effa0e`: a bump at 12 km/h → coast to a stop in ~7 s (gap ≤ `delayedStopGapMs` → prompt-stop regime) → stand motionless and **upright** for the full 20 s window confirmed as a crash (FP, rider cancelled in 3.5 s). The R6-F veto did not cover it (gap regime only). R6-G extends the upright veto to the prompt-stop regime, with one EXTRA guard the gap regime does not need: the impact must have produced **no violent rotation** (`peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS`, 3.0 rad/s). The PROMPT-regime veto cone is **15°** (`promptVetoUprightAngleDeg`) — kept at the original tight value because the prompt stop is the more crash-like regime, and the widening to 25° has field evidence only in the GAP regime. Rationale: an over-the-bars / endo that ends wheels-up spikes the gyro (the 2026-06-03 on-side crash `27baa0` hit 9.65 rad/s vs `effa0e`'s ~1.7) and is left to confirm, as is any toppled on-side crash (≥ 15° PROMPT cone). The "unconscious rider, bike upright" FN is not feasible — a laterally-unstable bike cannot stay within 15° without a conscious rider balancing it; incapacitation topples it (on-side → confirms) or tumbles it (high gyro → confirms). The `GAP_VETO` row gains `regime=GAP\|PROMPT` and `gyro_peak`/`gyro_thr`. Regression seeds: `effa0e` low-rotation upright → vetoed (PROMPT); high-rotation (endo) upright → confirms; ~20° PROMPT stop with low gyro → confirms (FN-safety pin: PROMPT cone = 15°, not 25°); on-side / invalid-ref / GPS-stale unaffected. | ✅ Implemented |
+| **R6-F** | **GAP-regime upright veto.** The gap regime (R6-B) was the only confirm path that ignored orientation — it confirmed on 20 s of stillness alone. A real-world FP (gravel bump → coast to a stop, gap 9.9 s → stand motionless and **upright** 20 s) confirmed as a crash. At the confirm gate, when `firstSilenceGapMs > delayedStopGapMs`, the silence-window orientation angle is now computed: if `0 ≤ angle < gapVetoUprightAngleDeg` the confirm is **vetoed** and the machine returns to MONITORING. The GAP-regime veto cone is **37°** (`gapVetoUprightAngleDeg`) — NOT the 45° `uprightAngleThresholdDegrees` (which is a *timing* threshold where both sides still confirm). Originally introduced at 15°; widened to 25° after field evidence (session `2ab57f`): a settled bike at ~18.6° produced a false positive with the old 15° cone. Widened again 25° → 37° (2026-09-19): a whole-corpus replay (`scripts/replay_gap_cone.py`) found 13 benign field GAP confirms at 25–40° (bike at rest, ‖sil‖ ≈ g, upright or propped; 12 of them below 37°), while every probable real downed bike at rest reads ≥ 61°. No real GAP-regime fall exists in the corpus — real falls stop within ~2 s and land in the prompt regime — so the residual FN (a delayed-stop fall leaving the bike propped at 25–37°) is unmeasured, not disproved. A bike tilted to 37–45° is left to confirm. Non-upright (`angle ≥ 37°`) and not-computable (`-1.0`: invalid ref / too few samples) still confirm — the on-side paths and the no-orientation-data safety net are untouched. New `GAP_UPRIGHT_VETO` (`GAP_VETO`) calibration event records each veto. Regression seeds in `CrashStateMachineTest`: upright (~0°) vetoes incl. a real-data replay of the FP session; ~36° (inside 37° cone) vetoes; ~38° (outside) confirms; exactly 37° confirms; ~42° confirms; field seed `952992_8b426c` (32°) vetoes; on-side and invalid-ref still confirm. | ✅ Implemented |
+| **R6-G** | **Prompt-stop (non-gap) upright veto.** R6-F's "lever to revisit" (below), implemented after the 2026-06-03 session `effa0e`: a bump at 12 km/h → coast to a stop in ~7 s (gap ≤ `delayedStopGapMs` → prompt-stop regime) → stand motionless and **upright** for the full 20 s window confirmed as a crash (FP, rider cancelled in 3.5 s). The R6-F veto did not cover it (gap regime only). R6-G extends the upright veto to the prompt-stop regime, with one EXTRA guard the gap regime does not need: the impact must have produced **no violent rotation** (`peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS`, 3.0 rad/s). The PROMPT-regime veto cone is **15°** (`promptVetoUprightAngleDeg`) — kept at the original tight value because the prompt stop is the more crash-like regime, and the GAP widenings (25°, then 37°) have field evidence only in the GAP regime. Rationale: an over-the-bars / endo that ends wheels-up spikes the gyro (the 2026-06-03 on-side crash `27baa0` hit 9.65 rad/s vs `effa0e`'s ~1.7) and is left to confirm, as is any toppled on-side crash (≥ 15° PROMPT cone). The "unconscious rider, bike upright" FN is not feasible — a laterally-unstable bike cannot stay within 15° without a conscious rider balancing it; incapacitation topples it (on-side → confirms) or tumbles it (high gyro → confirms). The `GAP_VETO` row gains `regime=GAP\|PROMPT` and `gyro_peak`/`gyro_thr`. Regression seeds: `effa0e` low-rotation upright → vetoed (PROMPT); high-rotation (endo) upright → confirms; ~20° PROMPT stop with low gyro → confirms (FN-safety pin: PROMPT cone = 15°, not the GAP cone); on-side / invalid-ref / GPS-stale unaffected. | ✅ Implemented |
 
 ### Revision 4 — May 2026 (contextual sensor data)
 
@@ -763,7 +869,7 @@ Two signals decide the silence-window duration, each authoritative in its own re
 gap > 8 s  (rider kept moving after impact — delayed stop):
     → 20 s window  [gap regime; orientation NOT used to pick the window]
        · but at the 20 s confirm gate, the R6-F upright veto applies
-         (orientation < 25° → suppress confirm) — see "Two uses of orientation" below
+         (orientation < 37° → suppress confirm) — see "Two uses of orientation" below
 
 gap ≤ 8 s  (stopped with the impact — prompt stop):
     angle ≥ 45°  (on-side or significantly tilted)  → 4.5 s  [clear crash, fast alert]
@@ -781,7 +887,7 @@ Orientation degrees feed **two distinct decisions**, and conflating them causes 
 
 1. **Window duration — *timing* (R6-C, the decision table above).** In the **prompt-stop** regime (gap ≤ 8 s) the angle picks *how long to wait*: ≥ 45° (on-side) → 4.5 s fast alert, < 45° (upright) → 20 s. **Both outcomes still CONFIRM** — the window choice never suppresses an alert. The **gap regime does not use orientation for the window** (always 20 s).
 
-2. **Confirm veto — *fire / no-fire* (R6-F gap + R6-G prompt).** At the 20 s confirm gate, if the silence-window orientation is within the regime-specific upright cone of the pre-impact reference, the confirm is **vetoed** → return to MONITORING, no alert. The cone is **regime-specific**: **GAP=25°** (`gapVetoUprightAngleDeg`, widened from 15° after field session `2ab57f` confirmed an FP at ~18.6° tilt) and **PROMPT=15°** (`promptVetoUprightAngleDeg`, kept at the original tight value — the prompt stop is more crash-like and the 25° widening has field evidence only in the GAP regime). Both are deliberately much tighter than the 45° timing threshold (which is a *window-choice* threshold, not a veto). In the **gap** regime the veto engages on orientation alone (R6-F); in the **prompt-stop** regime it additionally requires that the impact produced **no violent rotation** (`peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS`, R6-G). This is the only place orientation *suppresses* a confirm.
+2. **Confirm veto — *fire / no-fire* (R6-F gap + R6-G prompt).** At the 20 s confirm gate, if the silence-window orientation is within the regime-specific upright cone of the pre-impact reference, the confirm is **vetoed** → return to MONITORING, no alert. The cone is **regime-specific**: **GAP=37°** (`gapVetoUprightAngleDeg`, widened 15° → 25° after field session `2ab57f`, then → 37° after the 2026-09-19 corpus replay) and **PROMPT=15°** (`promptVetoUprightAngleDeg`, kept at the original tight value — the prompt stop is more crash-like and the GAP widenings have field evidence only in the GAP regime). Both are deliberately much tighter than the 45° timing threshold (which is a *window-choice* threshold, not a veto). In the **gap** regime the veto engages on orientation alone (R6-F); in the **prompt-stop** regime it additionally requires that the impact produced **no violent rotation** (`peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS`, R6-G). This is the only place orientation *suppresses* a confirm.
 
 **Why the prompt-stop veto needs the extra gyro gate** (the gap veto does not):
 
@@ -884,13 +990,13 @@ The IMPACT → SILENCE_CHECK transition on the **on-side relaxation path** does 
 
 ### False-negative analysis
 
-The on-side branch uses the same 4.5 s threshold as Revision 4 and prior. Real crashes that lay the bike on its side (the majority — ~70–85 % per cycling-incident literature) confirm with the same latency as before. The rare crash where the bike stays upright (pinned against a wall or car, OTB with bike standing) is treated by where it lands relative to the regime-specific veto cone: if the bike ends within **15°** (PROMPT regime) or **25°** (GAP regime) of its pre-impact orientation AND, in the prompt regime, the impact produced no violent rotation (peak gyro < 3.0 rad/s), the 20 s confirm is now **vetoed** — that case no longer confirms at all, and the SpeedDropMonitor (if enabled) is the only remaining backstop. A high-rotation OTB that ends wheels-up still confirms (the gyro gate keeps it firing), and a bike knocked beyond the veto cone (> 15° in PROMPT, > 25° in GAP) still confirms — a ~20 s delay, well within the irrelevant range for emergency response.
+The on-side branch uses the same 4.5 s threshold as Revision 4 and prior. Real crashes that lay the bike on its side (the majority — ~70–85 % per cycling-incident literature) confirm with the same latency as before. The rare crash where the bike stays upright (pinned against a wall or car, OTB with bike standing) is treated by where it lands relative to the regime-specific veto cone: if the bike ends within **15°** (PROMPT regime) or **37°** (GAP regime) of its pre-impact orientation AND, in the prompt regime, the impact produced no violent rotation (peak gyro < 3.0 rad/s), the 20 s confirm is now **vetoed** — that case no longer confirms at all, and the SpeedDropMonitor (if enabled) is the only remaining backstop. A high-rotation OTB that ends wheels-up still confirms (the gyro gate keeps it firing), and a bike knocked beyond the veto cone (> 15° in PROMPT, > 37° in GAP) still confirms — a ~20 s delay, well within the irrelevant range for emergency response.
 
 **Accepted residual — GAP-regime veto ignores gyro (decided 2026-06-14, "document and leave").** The
 gyro no-tumble gate (`peak gyro < 3.0 rad/s`) is applied ONLY in the PROMPT regime; the GAP regime
-(`firstSilenceGapMs > 8 s` — the rider kept riding 8 s+ after the impact) vetoes a `< 25°` upright stop
+(`firstSilenceGapMs > 8 s` — the rider kept riding 8 s+ after the impact) vetoes a `< 37°` upright stop
 *regardless* of rotation. So a contrived crash — rider rides 8 s+ after a jolt, THEN a violent tumble
-(high gyro) that does not re-cross the impact threshold and leaves the bike `< 25°` at rest — would be
+(high gyro) that does not re-cross the impact threshold and leaves the bike `< 37°` at rest — would be
 vetoed with no alert. Judged a negligible, narrow residual: the 8 s+ continued-riding gap is a strong
 conscious-rider signal, the geometry (high-gyro tumble ending nearly wheels-down) is unusual, and the
 SpeedDropMonitor partially backstops it. Adding the gyro gate to the GAP regime was rejected because it

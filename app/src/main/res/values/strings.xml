@@ -210,6 +210,8 @@
     <string name="combined_log_1_datatype_name">Fuel Combo 1</string>
     <string name="combined_log_2_datatype_name">Fuel Combo 2</string>
     <string name="combined_log_datatype_desc">Tap to log a configured drink + carbs combo in one go. Counts toward both your hydration and carb targets.</string>
+    <string name="fuel_panel_datatype_name">KSafe Fuel Panel</string>
+    <string name="fuel_panel_datatype_desc">Hydration and carb deficit side by side, colour-coded. Tap the left half to log Drink 1, the right half to log Carb 1; tap again within 6 s to undo.</string>
     <string name="hyd_status_datatype_name">KSafe Hydration Status</string>
     <string name="hyd_status_datatype_desc">Shows current hydration deficit relative to target. Color-coded by urgency. A leading \"~\" means the sweat estimate is running without a HR/power sensor (rough, temperature-based) — the reminders still work, the number is just approximate.</string>
 

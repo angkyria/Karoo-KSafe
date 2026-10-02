@@ -185,6 +185,8 @@
     <string name="combined_log_1_datatype_name">Combo 1</string>
     <string name="combined_log_2_datatype_name">Combo 2</string>
     <string name="combined_log_datatype_desc">Toca para registrar una bebida + carbos combinados de una vez. Cuenta para tus objetivos de hidratación y carbos.</string>
+    <string name="fuel_panel_datatype_name">KSafe Panel nutrición</string>
+    <string name="fuel_panel_datatype_desc">Déficit de hidratación y de carbos lado a lado, con colores. Toca la mitad izquierda para registrar Bebida 1 y la derecha para registrar Carbo 1; vuelve a tocar en 6 s para deshacer.</string>
     <string name="hyd_status_datatype_name">KSafe Estado hidratación</string>
     <string name="hyd_status_datatype_desc">Muestra el déficit actual de hidratación respecto al objetivo. Color según urgencia. Un «~» inicial indica que la estimación de sudor va sin sensor FC/potencia (aproximada, según temperatura) — los recordatorios funcionan igual, el número es solo orientativo.</string>
 

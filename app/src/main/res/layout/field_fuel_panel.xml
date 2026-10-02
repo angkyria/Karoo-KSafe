@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  KSafe Fuel Panel (FuelPanelDataType): two tap targets side by side — hydration / Drink 1 on
+  the left, carbs / Carb 1 on the right. Each half's background is its tracker's status
+  colour, the big line its deficit, the small line what a tap logs. Built for one of three
+  full-width rows on a Karoo page (~478×216 px on a Karoo 2), so each half (~239×216) is a
+  bigger target than a half-width log field.
+
+  Same RemoteViews contract as field_view.xml: text gravity lives HERE, never set through
+  RemoteViews (TextView.setGravity is not remotable before API 31 and fails the whole field
+  on a Karoo 2). Only RemoteViews-inflatable classes are used — a plain <View> divider is not
+  one — so the gap between the halves is a margin. Text colour is white: both halves are
+  always painted (status / flash / OFF colours), never the Karoo-theme passthrough.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:baselineAligned="false"
+    android:orientation="horizontal">
+
+    <LinearLayout
+        android:id="@+id/fuel_panel_hyd"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginEnd="1dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:padding="2dp">
+
+        <!-- Deficit — the half's headline, so it may grow well past the 22sp of the
+             single-cell fields. -->
+        <TextView
+            android:id="@+id/fuel_panel_hyd_main"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1.5"
+            android:autoSizeMaxTextSize="40sp"
+            android:autoSizeMinTextSize="8sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
+        <!-- What a tap logs ("💧 Sip 70ml"); a gel / bottle slot icon is its left
+             compound drawable. -->
+        <TextView
+            android:id="@+id/fuel_panel_hyd_hint"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:autoSizeMaxTextSize="16sp"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="#CCFFFFFF" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/fuel_panel_carb"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="1dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:padding="2dp">
+
+        <TextView
+            android:id="@+id/fuel_panel_carb_main"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1.5"
+            android:autoSizeMaxTextSize="40sp"
+            android:autoSizeMinTextSize="8sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/fuel_panel_carb_hint"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:autoSizeMaxTextSize="16sp"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="#CCFFFFFF" />
+
+    </LinearLayout>
+
+</LinearLayout>

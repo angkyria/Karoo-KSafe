@@ -155,6 +155,12 @@
         graphical="true"
         icon="@drawable/ic_ksafe"
         typeId="combined-log-2" />
+    <DataType
+        description="@string/fuel_panel_datatype_desc"
+        displayName="@string/fuel_panel_datatype_name"
+        graphical="true"
+        icon="@drawable/ic_ksafe"
+        typeId="fuel-panel" />
     <BonusAction
         actionId="log-carb-1"
         displayName="@string/action_log_carb_1" />

@@ -95,13 +95,14 @@ The Safety Timer **pauses automatically** when the ride is paused.
 | **Custom Message 1 / 2 / 3** | Send the slot's preset text — no countdown | Orange `SENDING…` · Green `SENT ✓` · Red `ERR retry` |
 | **Webhook 1 / 2** | Fire the configured HTTP request, with optional geo-fence and on-screen ride alert | Orange `firing…` · Green `OK ✓` · Red `ERR retry` |
 
-### Fueling — logging (7, v2.0)
+### Fueling — logging (8, v2.0)
 
 | Field | Tap action |
 |-------|-----------|
 | **Carb log 1 / 2 / 3** | Log one serving of the slot's configured grams. A second tap on the same slot within ~5 s of the green `+Xg` flash **undoes** the entry (red `−Xg` confirmation) |
 | **Hydration log 1 / 2** | Log one serving of the slot's configured ml. Same on-screen undo: second tap within ~5 s reverses the log |
 | **Combined fuel log 1 / 2** | Log a drink volume AND its carbs in one tap; a second tap within ~6 s undoes it. Active when either the carbs or hydration tracker is enabled (logs only the enabled side); grey when both are off. Icon is fixed; label, ml, carbs and idle colour are editable per slot |
+| **Fuel panel** | Hydration and carbs side by side in one field, sized for one of three full-width rows on a page. Each half shows its deficit, coloured like the status fields; tap the left half to log **Drink 1**, the right half to log **Carb 1** — exactly like tapping those fields, including the ~6 s undo |
 
 ### Fueling — status (7, v2.0)
 
@@ -134,7 +135,7 @@ All seven fueling status fields also publish their value as a **karoo-ext data s
 
 Stream states mirror the on-screen fields: `Idle` whenever no ride is active (the trackers retain their totals after ride end for the post-ride summary, but consumers never receive them as live data), `Searching` while the tracker is booting or no usable sensor is paired, `NotAvailable` when the extension master switch or the feature toggle is off, `Streaming` otherwise. Streams only run while at least one consumer subscribes, so they cost nothing when unused.
 
-**Fourteen of the 21 fields have a rider-pickable idle background** — SOS, Safety Timer, Custom Message 1–3, Webhook 1–2, Carb Log 1–3, Hydration Log 1–2, Combined Fuel Log 1–2 — picked from a palette in the corresponding tab. The first entry is **Karoo default (auto day/night)** — the new default for fresh installs — which makes the field render with no custom background and theme-aware text (black on white during the day, white on black at night) so it matches native Karoo fields. Below it sits a 20-hue painted palette for riders who want a coloured tap target. Reserved state colours (red error, orange countdown, amber warning, green success, grey OFF) can't be selected — they belong to the state machine. The remaining 7 fields have no picker: **Carb burn rate**, **Carb avg burn**, **Carbs burned**, **Calories (HR)** and **Calorie Rate (HR)** are always Karoo-theme (passive readouts that should look native); **Carb status** and **Hydration status** are always coloured by deficit level (blue ahead / green within margin / amber approaching threshold / red over). The five Karoo-theme readout fields also respect the **per-field horizontal alignment** (left / center / right) the rider sets in the Karoo profile editor; every other field is always centered because they're tap targets or coloured state indicators where alignment makes the field look off-balance next to its neighbours.
+**Sixteen of the 24 fields have a rider-pickable idle background** — SOS, Safety Timer, Custom Message 1–3, Webhook 1–4, Carb Log 1–3, Hydration Log 1–2, Combined Fuel Log 1–2 — picked from a palette in the corresponding tab. The first entry is **Karoo default (auto day/night)** — the new default for fresh installs — which makes the field render with no custom background and theme-aware text (black on white during the day, white on black at night) so it matches native Karoo fields. Below it sits a 20-hue painted palette for riders who want a coloured tap target. Reserved state colours (red error, orange countdown, amber warning, green success, grey OFF) can't be selected — they belong to the state machine. The remaining 8 fields have no picker: **Carb burn rate**, **Carb avg burn**, **Carbs burned**, **Calories (HR)** and **Calorie Rate (HR)** are always Karoo-theme (passive readouts that should look native); **Carb status**, **Hydration status** and both halves of the **Fuel panel** are always coloured by deficit level (blue ahead / green within margin / amber approaching threshold / red over). The five Karoo-theme readout fields also respect the **per-field horizontal alignment** (left / center / right) the rider sets in the Karoo profile editor; every other field is always centered because they're tap targets or coloured state indicators where alignment makes the field look off-balance next to its neighbours.
 
 ## Hardware buttons (SRAM AXS)
 

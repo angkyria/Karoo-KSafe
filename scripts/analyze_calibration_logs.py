@@ -50,8 +50,10 @@ Event catalogue understood by this script:
     HYD_START / HYD_LOG / HYD_UNDO / HYD_FIRE / HYD_PERIODIC
     FUEL_QUIET  — a time-grid reminder was due but the 3-min quiet window
                   swallowed it (a deficit alert had just fired). Never a fire.
-                  Since 2.2.4 also reason=deficit_wins: a deficit alert took a due
-                  time tick's place (same tick or pulled forward by the lookahead).
+                  Since 2.2.4 also reason=deficit_wins: a deficit alert fired at its
+                  own time and consumed a due time tick (same tick, or one held because
+                  that deficit was imminent); reason=logged_after_tick: a held/late
+                  tick dropped because the rider logged after its grid point.
 
   Emergency dispatch:
     EMERG_TRIG (EMERGENCY_TRIGGERED), ALERT_FAIL (ALERT_DELIVERY_FAILED),

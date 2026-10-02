@@ -278,9 +278,11 @@ class CalibrationLogger(
          * Payload carries `kind=` (carb/hyd) and `since_deficit_ms=`, which is the
          * whole point of the row: the 3-min window was picked from three field
          * samples, and only these rows say whether it is the right number.
-         * Since 2.2.4 also emitted with `reason=deficit_wins` (no `since_deficit_ms`)
-         * when a deficit alert takes a due time tick's place — same tick, or pulled
-         * forward by the lookahead in `FuelingAlertScheduler.shouldFireDeficit`.
+         * Since 2.2.4 also emitted (no `since_deficit_ms`) with `reason=deficit_wins` when
+         * a deficit alert fires at its own time and consumes a due time tick — same tick, or
+         * a tick `FuelingAlertScheduler.resolveTick` held because that deficit was imminent —
+         * and with `reason=logged_after_tick` when a held/late tick is dropped because the
+         * rider logged after its grid point.
          */
         FUELING_ALERT_QUIETED("FUEL_QUIET"),
         // ─── FIT export (added 2026-05) ──────────────────────────────────────

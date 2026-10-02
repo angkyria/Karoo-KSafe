@@ -476,7 +476,7 @@ The `karoo-ext` SDK exposes `KarooExtension.startFit(emitter: Emitter<FitEffect>
 
 | Effect | When | Lands in |
 |---|---|---|
-| `WriteToRecordMesg(values)` | Tracker / wellness value changes | A FIT `record` message — a per-timestamp sample alongside HR / power |
+| `WriteToRecordMesg(values)` | Every ride-clock tick while recording | A FIT `record` message — a per-timestamp sample alongside HR / power |
 | `WriteToSessionMesg(values)` | Tracker / wellness summary changes | The FIT `session` message — the activity's headline / summary entry (last value wins) |
 
 Both take a `List<FieldValue>`, where each `FieldValue(developerField, value: Double)` pairs a custom field with its current value.
@@ -497,31 +497,25 @@ All seven fields are float32 (`fitBaseTypeId = 136`) and live in developer-data 
 
 `#7` is **reserved** — the session-average burn rate is derivable downstream from the `#6` time series, so writing it again would just duplicate information for 4 bytes.
 
-### Write-on-change throttle
+### Write cadence
 
-The collector pulses on the Karoo's `DataType.Type.ELAPSED_TIME` stream (1 Hz native cadence — same tick as the HR / power records), but each write is **gated on actual value change**:
+The collector pulses on the Karoo's `DataType.Type.ELAPSED_TIME` stream (1 Hz native cadence — same tick as the HR / power records).
+
+**Record message: every tick.** The current values are re-written on every tick whose ELAPSED_TIME value has advanced, so every record carries the fields:
 
 ```kotlin
-val recChanged =
-    carbsG != lastRecCarbsG       ||
-    hydMl  != lastRecHydMl        ||
-    carbsBurnedG != lastRecCarbsBurnedG ||
-    burnRateGph  != lastRecBurnRateGph  ||
-    driftPct     != lastRecDriftPct
-if (recChanged) {
-    emitter.onNext(WriteToRecordMesg(listOf(...)))
-    // ... update cached values ...
+if (writeDevFields && elapsed != lastRecordElapsed) {
+    emitter.onNext(WriteToRecordMesg(recordFields))
+    lastRecordElapsed = elapsed
 }
 ```
 
-The cache initial value is `Double.NaN` — `NaN != NaN` is true in IEEE 754, so the first tick of every ride always emits. The session message uses the same idiom against its own cache.
+- **Why not write-on-change.** An earlier version wrote only when a value changed, on the assumption that FIT consumers interpolate between samples. Intervals.icu (and others) don't: they zero-fill every record that lacks the field, so a sparse cumulative series draws as spikes to zero instead of a line. A fixed multi-second throttle has the same problem at the throttle interval — only a gap-free, per-record series draws cleanly.
+- **Why the ride clock, not the wall clock.** A `now - lastWrite >= 1000 ms` gate on this ~1 Hz stream dropped every tick that arrived a few ms early, and each dropped tick is a record with no `ksafe_*` values. On a 2026-10-02 Karoo 2 ride that was 504 of 6 070 records (8 %), spread evenly as single-second gaps; the CORE heat extension, writing on every tick of the same stream, lost one. Only a repeated ELAPSED_TIME value — the ride clock did not advance, so there is no new record — is skipped.
 
-Why write-on-change instead of 1 Hz:
-- `cumLoggedG` / `cumLoggedMl` are **step curves** — they only move on rider taps. Re-writing the same value every second produces ~18 000 identical records per 5 h ride.
-- `cumBurnedG` / `burnRateGph` only update every 15 s (the integrator's tick cadence). 14 of every 15 same-second writes carry no new information.
-- `currentDriftPct` updates every 30 s (`WellnessMonitor.MONITOR_TICK_MS`). 29 of 30 same-second writes are redundant.
-- FIT consumers (Strava, Intervals.icu, TrainingPeaks) plot developer fields at the emitted timestamps and interpolate. A sparse series renders identically to a dense series that repeats values — but the dense series wastes the FIT file size and the per-record allocation budget.
-- Audit 2026-05-25: pre-throttle the FIT writer accounted for ~50 K allocations/hour (record + session messages + 10 FieldValue per tick + listOf wrappers). Write-on-change brings this to ~3 K allocations/hour without touching the contract.
+The cache initial value is `Double.NaN` — `NaN != NaN` is true in IEEE 754, so the first tick of every ride always emits.
+
+**Session message: write-on-change.** The session message is "last write wins" (only the value at FIT close becomes the activity header), so it is written only when a summary value changes — with a 5 g deadband on `cumBurnedG` — against its own `Double.NaN`-seeded cache.
 
 ### Auto-pause / Idle handling
 
@@ -551,11 +545,11 @@ A flat-zero column in the FIT is honest data ("no fueling logged") and lets a ri
 
 ### Cost
 
-| Concept | Per ride (5 h, post-throttle) |
+| Concept | Per ride (5 h) |
 |---|---|
-| Record + session IPCs (write-on-change, ~1.2 K record + ~0.3 K session writes) | ~0.1 s CPU total |
-| Allocations from FIT writer (`FieldValue` + `WriteToRecordMesg/SessionMesg` + lists) | ~3 K/hour (was ~50 K/hour before write-on-change) |
-| Disk: ~28 bytes extra per FIT record (5 float32) | ~3 KB total — sparse series |
+| Record IPCs (one per ride-clock tick, ~18 K) + session IPCs (write-on-change, ~0.3 K) | ~1 write/s while recording, on `Dispatchers.IO` — never blocks Main |
+| Allocations from FIT writer (`FieldValue` + `WriteToRecordMesg/SessionMesg` + lists) | One list, one `FieldValue` per field and one effect per record write; the per-tick tracker reads are volatile snapshots (B29) |
+| Disk: ~20–24 bytes extra per FIT record (5–6 float32) | ~360–450 KB total — dense series |
 | Battery overhead | <0.05 % (imperceptible) |
 
 Negligible against the ride app's own write throughput. The toggle exists for riders who don't want extra developer columns in their FIT, not for battery reasons.

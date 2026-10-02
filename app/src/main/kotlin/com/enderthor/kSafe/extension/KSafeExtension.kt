@@ -199,20 +199,6 @@ private const val SESSION_BURN_DEADBAND_G: Double = 5.0
  *  KSafe writes it via a standard (non-developer) [FieldValue]. */
 private const val FIT_SESSION_TOTAL_CALORIES_FIELD_NUM = 11
 
-/** Minimum spacing between FIT RECORD-message writes (carry-forward cadence). The record
- *  dev-fields are re-emitted at this interval regardless of whether the value changed.
- *
- *  Default 1 s (≈ every record). Hosts that DON'T interpolate sparse developer fields
- *  (intervals.icu et al.) zero-fill every record lacking the field, so ANY gap renders as a
- *  full-depth notch — i.e. a throttle doesn't give "shallow teeth", it gives the same spike
- *  problem at the throttle interval. Only a gap-free (per-record) series draws as a clean
- *  cumulative line, which is the whole point of carry-forward. Cost is ~1 write/s during
- *  recording only (~18 000 over a 5 h ride, ~360-450 KB of dev-field data); each is a blocking
- *  Binder round-trip but the writer runs on [Dispatchers.IO] (see startFit) so it never blocks
- *  Main, and the per-tick reads are cheap volatile snapshots (B29). Raise this ONLY if you
- *  accept a visibly toothed graph in exchange for fewer writes. */
-private const val FIT_RECORD_WRITE_INTERVAL_MS: Long = 1_000L
-
 // Fueling-persistence deadband constants and the zero-skip / unchanged / deadband
 // decision now live in [com.enderthor.kSafe.extension.util.FuelingPersistPolicy]
 // (pure + unit-tested) — see the persistence loop below.
@@ -3286,22 +3272,30 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
             }
             // FIT developer-field writer.
             //
-            // RECORD message: re-emitted on a fixed [FIT_RECORD_WRITE_INTERVAL_MS] cadence
-            // (carry-forward of the current cumulative values), NOT write-on-change. An earlier
-            // version throttled to write-on-change on the assumption that hosts "interpolate
-            // between emitted timestamps", so a sparse series would render like a dense one. That
-            // assumption is FALSE for intervals.icu (and others): a host that does NOT interpolate
-            // zero-fills the records lacking the field, so a sparse cumulative series renders as
-            // spikes-to-zero instead of a clean line — and two co-written cumulative fields (e.g.
-            // ksafe_carbs_g and ksafe_hyd_ml) then look identical once the host autoscales each to
-            // its own axis. A fixed cadence bounds the gap (hence the zero-fill "teeth") to the
-            // interval, trading graph cleanliness against write cost — see the constant's doc.
+            // RECORD message: re-emitted on EVERY ride-clock tick (carry-forward of the current
+            // cumulative values), NOT write-on-change. An earlier version throttled to
+            // write-on-change on the assumption that hosts "interpolate between emitted
+            // timestamps", so a sparse series would render like a dense one. That assumption is
+            // FALSE for intervals.icu (and others): a host that does NOT interpolate zero-fills the
+            // records lacking the field, so ANY gap renders as a full-depth notch — and two
+            // co-written cumulative fields (e.g. ksafe_carbs_g and ksafe_hyd_ml) then look
+            // identical once the host autoscales each to its own axis. Only a gap-free
+            // (per-record) series draws as a clean line.
+            //
+            // The gate is the ride clock itself — write when the ELAPSED_TIME value has advanced —
+            // never wall-clock spacing. A `now - lastWrite >= 1000 ms` gate on this ~1 Hz stream
+            // dropped every tick that was delivered a few ms early, and each dropped tick is a
+            // record with no ksafe_* values: 504 of 6 070 records (8 %) on a 2026-10-02 Karoo 2
+            // ride, while the CORE heat extension, writing on every tick of the same stream, lost
+            // one. Cost is ~1 write/s during recording only; each is a blocking Binder round-trip,
+            // but the writer runs on [Dispatchers.IO] so it never blocks Main, and the per-tick
+            // reads are cheap volatile snapshots (B29).
             //
             // SESSION message: keeps its write-on-change + 5 g cumBurnedG deadband below. It is
             // "last write wins" — only the value at FIT-close becomes the Strava/Intervals.icu
             // activity header — so dense session writes would churn allocations for no visible
             // benefit. Sentinel Double.NaN: NaN != NaN, so the first tick always emits.
-            var lastRecordWriteMs   = 0L
+            var lastRecordElapsed   = Double.NaN
             var lastSesCarbsG       = Double.NaN
             var lastSesHydMl        = Double.NaN
             var lastSesCarbsBurnedG = Double.NaN
@@ -3312,7 +3306,7 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
 
             karooSystem.streamDataFlow(DataType.Type.ELAPSED_TIME)
                 .mapNotNull { (it as? StreamState.Streaming)?.dataPoint?.singleValue }
-                .collect {
+                .collect { elapsed ->
                     // B29 — read the trackers' / monitor's published StateFlow snapshot
                     // instead of calling `getStatus()` / `getSummary()` every second.
                     // Each `.value` access is a single volatile read of an already-
@@ -3348,12 +3342,11 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
                             // running max — uninteresting as a per-second time series)
                             // and totalFires (just a counter). Both belong in the session
                             // summary only. See FIT-writer audit 2026-05-25.
-                            // Carry-forward at a fixed cadence: re-emit the current cumulative
-                            // values at most every FIT_RECORD_WRITE_INTERVAL_MS so every ~3 s of
-                            // records carries the field and the curves draw as clean lines on
-                            // zero-filling hosts, while bounding write cost (see header + constant).
-                            val nowMs = System.currentTimeMillis()
-                            if (writeDevFields && nowMs - lastRecordWriteMs >= FIT_RECORD_WRITE_INTERVAL_MS) {
+                            // Carry-forward on every ride-clock tick so every record carries the
+                            // fields and the curves draw as clean lines on zero-filling hosts. Only
+                            // a repeated ELAPSED_TIME value (the ride clock didn't advance, so
+                            // there is no new record to fill) is skipped — see the header above.
+                            if (writeDevFields && elapsed != lastRecordElapsed) {
                                 val recordFields = mutableListOf(
                                     FieldValue(carbField,         carbsG),
                                     FieldValue(hydField,          hydMl),
@@ -3363,7 +3356,7 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
                                 )
                                 if (writeCalories) recordFields.add(FieldValue(caloriesField, kcal))
                                 emitter.onNext(WriteToRecordMesg(recordFields))
-                                lastRecordWriteMs = nowMs
+                                lastRecordElapsed = elapsed
                             }
                             // Session (single-value activity-header summary): totals at
                             // ride end + ride-max statistics. Each tick overwrites the

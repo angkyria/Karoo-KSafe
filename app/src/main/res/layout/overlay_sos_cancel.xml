@@ -9,6 +9,7 @@
     android:paddingBottom="3dp">
 
     <LinearLayout
+        android:id="@+id/sos_overlay_card"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@drawable/bg_sos_overlay"

@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.enderthor.kSafe.R
+import com.enderthor.kSafe.extension.util.clipToOutlineCompat
 import timber.log.Timber
 
 /**
@@ -62,6 +63,7 @@ class FuelingOverlayManager(private val context: Context) {
                 // (same isAttachedToWindow guard + ref-clear).
                 removeInternal()
                 val v = LayoutInflater.from(context).inflate(R.layout.overlay_fueling_prompt, null, false)
+                v.clipToOutlineCompat(R.id.fuel_overlay_bg, R.id.btn_fuel_action)
                 // Tint the overlay background with the channel's configured alert colour so the
                 // overlay matches the InRideAlert (and each channel gets its own colour) instead
                 // of the static teal. Mutate() so we don't recolour the shared drawable constant.

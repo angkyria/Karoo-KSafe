@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.TextView
 import com.enderthor.kSafe.R
 import com.enderthor.kSafe.data.EmergencyReason
+import com.enderthor.kSafe.extension.util.clipToOutlineCompat
 import timber.log.Timber
 
 /**
@@ -58,6 +59,7 @@ class SosOverlayManager(private val context: Context) {
                     }
                     val inflater = LayoutInflater.from(context)
                     val view = inflater.inflate(R.layout.overlay_sos_cancel, null, false)
+                    view.clipToOutlineCompat(R.id.sos_overlay_card, R.id.btn_cancel_sos)
 
                     val params = WindowManager.LayoutParams(
                         WindowManager.LayoutParams.MATCH_PARENT,
@@ -122,6 +124,7 @@ class SosOverlayManager(private val context: Context) {
                 infoView = null
 
                 val view = LayoutInflater.from(context).inflate(R.layout.overlay_info, null, false)
+                view.clipToOutlineCompat(R.id.info_overlay_card, R.id.btn_dismiss_info)
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,

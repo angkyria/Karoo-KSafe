@@ -41,6 +41,7 @@ import com.enderthor.kSafe.activity.MainViewModel
 import com.enderthor.kSafe.data.CrashProfileSetting
 import com.enderthor.kSafe.data.CrashSensitivity
 import com.enderthor.kSafe.extension.KSafeExtension
+import com.enderthor.kSafe.extension.util.KarooHardware
 import kotlinx.coroutines.delay
 
 /**
@@ -161,6 +162,9 @@ fun SafetyScreen(vm: MainViewModel) {
         // the system mute state. Surface this at the TOP of the Safety tab so a
         // rider relying on KSafe for emergencies knows that muting the device
         // silences every audible alert, with no detection or override path.
+        // On a Karoo 2 there is no sound at all (firmware drops every extension beep —
+        // see KarooHardware), so the banner says that instead of promising an override.
+        val isKaroo2 = remember { KarooHardware.isKaroo2(KSafeExtension.getInstance()?.karooSystem) }
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.tertiaryContainer
@@ -169,13 +173,13 @@ fun SafetyScreen(vm: MainViewModel) {
         ) {
             Column(modifier = Modifier.padding(8.dp)) {
                 Text(
-                    text = stringResource(R.string.safety_buzzer_mute_title),
+                    text = stringResource(if (isKaroo2) R.string.k2_no_sound_title else R.string.safety_buzzer_mute_title),
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
                 Text(
-                    text = stringResource(R.string.safety_buzzer_mute_hint),
+                    text = stringResource(if (isKaroo2) R.string.k2_no_sound_hint else R.string.safety_buzzer_mute_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )

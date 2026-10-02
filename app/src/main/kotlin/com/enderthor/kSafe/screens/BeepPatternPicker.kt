@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.enderthor.kSafe.R
 import com.enderthor.kSafe.data.BeepPattern
 import com.enderthor.kSafe.extension.KSafeExtension
+import com.enderthor.kSafe.extension.util.KarooHardware
 
 /**
  * Compact picker for [BeepPattern]. The trigger renders as a settings-row-style
@@ -62,6 +63,9 @@ fun BeepPatternPicker(
 ) {
     var dialogOpen by remember { mutableStateOf(false) }
     val currentLabel = beepPatternLabel(selected)
+    // Karoo 2: the firmware drops every extension beep (see KarooHardware) — the choice is
+    // still saved, but say so rather than let the rider think the preview is broken.
+    val isKaroo2 = remember { KarooHardware.isKaroo2(KSafeExtension.getInstance()?.karooSystem) }
 
     // ─── Trigger: settings-row-style card ───────────────────────────────────
     OutlinedCard(
@@ -97,6 +101,13 @@ fun BeepPatternPicker(
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
+                if (isKaroo2) {
+                    Text(
+                        text = stringResource(R.string.k2_no_sound_short),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,

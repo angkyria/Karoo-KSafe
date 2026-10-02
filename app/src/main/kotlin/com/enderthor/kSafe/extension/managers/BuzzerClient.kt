@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.os.Parcel
+import com.enderthor.kSafe.extension.util.KarooHardware
 import timber.log.Timber
 
 /**
@@ -29,8 +30,14 @@ import timber.log.Timber
  *    HAL APK (io.hammerhead.hal package, /vendor/priv-app/hh_hidl_aidl_nrf_translation_client).
  *    If a future OTA shuffles AIDL methods, the transaction ID changes and beep()
  *    becomes a no-op (or hits a different method); the catch keeps things safe.
+ *  - Karoo 2: the service binds and the transaction "succeeds", but the firmware drops it
+ *    ("beep(): Nothing to do on K2"), so a SUCCESS there would suppress the SDK fallback for
+ *    nothing. [unsupportedDevice] makes the client refuse up front instead — see [KarooHardware].
  */
-class BuzzerClient(private val context: Context) {
+class BuzzerClient(
+    private val context: Context,
+    private val unsupportedDevice: Boolean = KarooHardware.isKaroo2(),
+) {
 
     @Volatile private var binder: IBinder? = null
     @Volatile private var bound: Boolean = false
@@ -93,6 +100,7 @@ class BuzzerClient(private val context: Context) {
      * when the binder is already live.
      */
     fun ensureReady(): Boolean {
+        if (unsupportedDevice) return false
         if (binder != null) return true
         // binder == null with bound == true means a transient onServiceDisconnected
         // whose auto-reconnect is still pending — don't thrash it. Only rebind when
@@ -126,6 +134,7 @@ class BuzzerClient(private val context: Context) {
      *   onServiceConnected then flips [isReady] to true asynchronously.
      */
     fun connect(): String {
+        if (unsupportedDevice) return "not available on Karoo 2 — firmware ignores HAL beeps"
         if (bound) return "already bound"
         val pm = context.packageManager
         // Pre-flight: confirm we can even see the HAL package. On Android 11+,
@@ -190,6 +199,10 @@ class BuzzerClient(private val context: Context) {
      */
     fun beep(tones: List<Tone>): Boolean {
         if (tones.isEmpty()) return false
+        if (unsupportedDevice) {
+            lastResult = BeepResult.UNSUPPORTED_DEVICE
+            return false
+        }
         val b = binder ?: run {
             Timber.d("BuzzerClient beep dropped — no binder")
             lastResult = BeepResult.BIND_NOT_READY
@@ -258,6 +271,9 @@ class BuzzerClient(private val context: Context) {
          *  transaction-ID / Parcel layout drift from an OTA, or the binder died mid-call.
          *  Caller should fall back; the next process restart will re-bind and re-probe. */
         TRANSACT_THREW,
+        /** Karoo 2: the firmware drops HAL beeps, so the client never binds or transacts.
+         *  Caller falls back to the SDK beep (also silent on a Karoo 2 today). */
+        UNSUPPORTED_DEVICE,
     }
 
     companion object {

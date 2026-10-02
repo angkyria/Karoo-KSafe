@@ -374,6 +374,10 @@
     <string name="settings_buzzer_test_gated">Bypass BLOQUEADO por una OTA del Karoo (SecurityException). KSafe usará el pitido del SDK en emergencias — igual que sin bypass.</string>
     <string name="settings_buzzer_test_transact_failed">Bypass FALLÓ (la transacción lanzó excepción — ¿cambio de descriptor/ID en una OTA del Karoo?). KSafe usará el pitido del SDK en emergencias.</string>
     <string name="settings_buzzer_test_failed_other">Bypass FALLÓ (%1$s). KSafe usará el pitido del SDK en emergencias. Revisa logcat.</string>
+    <string name="settings_buzzer_test_k2_unsupported">No disponible en Karoo 2 — su firmware ignora las peticiones de buzzer de las extensiones, así que las alertas de KSafe son solo visuales.</string>
+    <string name="k2_no_sound_title">Karoo 2: KSafe no puede emitir sonidos</string>
+    <string name="k2_no_sound_hint">El firmware del Karoo 2 de Hammerhead no deja a las extensiones usar el buzzer, así que la cuenta atrás de choque, el SOS y los avisos no suenan. Vigila la pantalla y asigna \"KSafe: Cancelar emergencia\" a un botón físico para cancelar rápido.</string>
+    <string name="k2_no_sound_short">Sin sonido en Karoo 2</string>
 
     <!-- Aviso de permiso de superposición -->
     <string name="overlay_permission_title">⚠ Se requiere permiso de superposición</string>

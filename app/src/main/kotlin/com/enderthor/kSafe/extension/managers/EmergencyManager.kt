@@ -906,9 +906,11 @@ class EmergencyManager(
      *
      *  - [KSafeConfig.buzzerOnEmergencyEnabled] **on** (default) AND the HAL bind is live →
      *    fire the HAL bypass [halPattern]. Mute-immune. Predictable timing.
-     *  - **off**, or HAL bind unavailable → fire the SDK [sdkPattern] via
-     *    [KarooSystemService.dispatch]. Respects the rider's mute toggle (so if the rider
-     *    muted the Karoo deliberately, no sound — same as pre-buzzer KSafe behaviour).
+     *  - **off**, or HAL bind unavailable (always on a Karoo 2 — [BuzzerClient] refuses there)
+     *    → fire the SDK [sdkPattern] via [KarooSystemService.dispatch]. Respects the rider's
+     *    mute toggle (so if the rider muted the Karoo deliberately, no sound — same as
+     *    pre-buzzer KSafe behaviour). On a Karoo 2 the firmware drops this too, so emergencies
+     *    there are visual-only (see [com.enderthor.kSafe.extension.util.KarooHardware]).
      *
      * Plus the OTA safety net: if Hammerhead later gates the HAL service so [BuzzerClient.beep]
      * starts returning false ([BuzzerClient.BeepResult.GATED_BY_SECURITY],

@@ -12,7 +12,7 @@
 > minimum setup and simple versions of the Senders and Fueling sections. The pages below are
 > the in-depth reference.
 
-KSafe is a free, open-source safety extension for Karoo 3 (Karoo OS 1.527+). It works on two layers:
+KSafe is a free, open-source safety extension for Karoo 3 (Karoo OS 1.527+). It also runs on the Karoo 2, with limits — see [Karoo 2](#karoo-2). It works on two layers:
 
 - **Reactive** — detects crashes (accelerometer + gyroscope), sudden speed drops, missed check-ins and, optionally with an HR sensor, medical-episode patterns (HR flatline, HR collapse) and wellness alerts (sustained / critical HR, HR–power decoupling). A manual SOS button is always one tap away.
 - **Preventive** *(v2.0)* — carb and hydration tracker with sensor-aware targets that warn you before bonking or dehydration impair your judgment on the bike.
@@ -228,9 +228,16 @@ Unknown fields are silently ignored, so imports across versions always work.
 
 📘 Procedure, ADB commands and JSON schema: [docs/backup-restore.md](docs/backup-restore.md).
 
+## Karoo 2
+
+KSafe is built and tested on the Karoo 3, but it also runs on the Karoo 2 (Android 8.1, Hammerhead OS 1.6xx) with one hard limit:
+
+- **No sounds.** Hammerhead's Karoo 2 firmware doesn't let extensions use the buzzer: the SDK beep and the buzzer override are both dropped by the firmware, the Karoo 2's own beeper only accepts Hammerhead's system app, and in-ride alerts from extensions are shown without a sound. The crash countdown, SOS and fueling / hydration / check-in reminders are therefore **visual only** — the full-screen overlay and the data fields still work. Map **"KSafe: Cancel Emergency"** to a hardware button so you can cancel a countdown quickly. KSafe detects the Karoo 2 and says so in the Safety and Settings tabs.
+- Everything else was checked on a Karoo 2: data fields and taps, crash detection (its accelerometer reads ±16 g and its gyroscope ±2000 °/s, well above KSafe's thresholds), overlays, in-ride alerts, hardware-button actions, alert delivery and the FIT fields.
+
 ## Known issues
 
-- **The Karoo has a buzzer, not a speaker.** **Emergency sounds** (crash countdown and SOS firing) play **even when the Karoo is muted** — KSafe sounds the buzzer directly through the device's hardware layer, controlled by the **"Buzzer on emergency (overrides mute)"** toggle in Settings (on by default). **Non-emergency sounds** (ride start, check-in, fueling and wellness reminders) use the standard SDK beep API and still respect the device mute, so they go silent if you mute the Karoo. Keep the Karoo unmuted if you also want to hear those reminders.
+- **The Karoo has a buzzer, not a speaker.** *(Karoo 3 — the Karoo 2 plays no KSafe sounds at all, see [Karoo 2](#karoo-2).)* **Emergency sounds** (crash countdown and SOS firing) play **even when the Karoo is muted** — KSafe sounds the buzzer directly through the device's hardware layer, controlled by the **"Buzzer on emergency (overrides mute)"** toggle in Settings (on by default). **Non-emergency sounds** (ride start, check-in, fueling and wellness reminders) use the standard SDK beep API and still respect the device mute, so they go silent if you mute the Karoo. Keep the Karoo unmuted if you also want to hear those reminders.
 - No phone connection for the whole retry window → no alert. Emergency alerts retry automatically: 3 cycles of 3 attempts each (60 / 120 / 180 s between attempts inside a cycle, 5 min and 10 min between cycles — up to ~30 min total). If your phone reconnects within that window the alert still goes out; only a sustained disconnect across all 9 attempts fails completely. **When that happens you get a distinct descending beep + a red "Alert NOT delivered" message on the Karoo** so you know to find another way to call for help.
 - A large pothole or expansion joint followed by a complete stop for several seconds *can* trigger a false positive. The countdown is your safety net — tap CANCEL.
 - Without GPS fix (tunnel, dense tree cover) the speed gate degrades; gyroscope + accelerometer remain the only guard.

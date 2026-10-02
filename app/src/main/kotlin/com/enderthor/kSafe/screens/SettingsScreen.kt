@@ -40,6 +40,7 @@ import com.enderthor.kSafe.activity.BackupStorage
 import com.enderthor.kSafe.activity.MainViewModel
 import com.enderthor.kSafe.data.FitCaloriesSource
 import com.enderthor.kSafe.extension.KSafeExtension
+import com.enderthor.kSafe.extension.util.KarooHardware
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,6 +65,8 @@ fun SettingsScreen(vm: MainViewModel) {
     val config by vm.config.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Karoo 2: the firmware drops every extension beep — see KarooHardware.
+    val isKaroo2 = remember { KarooHardware.isKaroo2(KSafeExtension.getInstance()?.karooSystem) }
 
     var isActive          by remember(config.isActive)                  { mutableStateOf(config.isActive) }
     var fitExportEnabled  by remember(config.fuelingFitExportEnabled)   { mutableStateOf(config.fuelingFitExportEnabled) }
@@ -185,13 +188,19 @@ fun SettingsScreen(vm: MainViewModel) {
         // (countdown last 5s, ALERTING entry) directly to the Karoo's physical buzzer,
         // bypassing the rider's audio-alerts mute. ON by default — a safety extension
         // should be heard in a crash; riders who deliberately mute can opt out here.
+        // Disabled on a Karoo 2, whose firmware ignores the bypass (and every other extension
+        // beep) — the hint then explains why instead of promising a sound that never plays.
         SettingRow(label = stringResource(R.string.settings_buzzer_bypass_label)) {
-            Switch(checked = buzzerOnEmergency, onCheckedChange = { buzzerOnEmergency = it })
+            Switch(
+                checked = buzzerOnEmergency,
+                onCheckedChange = { buzzerOnEmergency = it },
+                enabled = !isKaroo2,
+            )
         }
         Text(
-            text = stringResource(R.string.settings_buzzer_bypass_hint),
+            text = stringResource(if (isKaroo2) R.string.k2_no_sound_hint else R.string.settings_buzzer_bypass_hint),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (isKaroo2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         // Update-availability notice — opt-out toggle (default on). Gates the periodic,
@@ -226,6 +235,9 @@ fun SettingsScreen(vm: MainViewModel) {
             runningLabel = runningLabel,
             isSuccess = { it == beepOkMessage },
             onAction = {
+                // The Karoo 2 binds and "accepts" the beep but never plays it — report that
+                // instead of a false "Beep dispatched" success.
+                if (isKaroo2) return@TestActionButton context.getString(R.string.settings_buzzer_test_k2_unsupported)
                 val client = com.enderthor.kSafe.extension.managers.BuzzerClient(context)
                 try {
                     val bindDiag = client.connect()

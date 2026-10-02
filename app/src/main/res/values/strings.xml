@@ -419,6 +419,11 @@
     <string name="settings_buzzer_test_gated">Bypass GATED by Karoo OTA (SecurityException). KSafe will fall back to SDK beep on emergencies — same as pre-bypass behaviour.</string>
     <string name="settings_buzzer_test_transact_failed">Bypass FAILED (transact threw — descriptor/transaction-ID drift in a Karoo OTA?). KSafe will fall back to SDK beep on emergencies.</string>
     <string name="settings_buzzer_test_failed_other">Bypass FAILED (%1$s). KSafe will fall back to SDK beep on emergencies. Check logcat.</string>
+    <string name="settings_buzzer_test_k2_unsupported">Not available on Karoo 2 — its firmware ignores buzzer requests from extensions, so KSafe alerts are visual only.</string>
+    <!-- Karoo 2: Hammerhead's firmware drops every extension beep (see KarooHardware). -->
+    <string name="k2_no_sound_title">Karoo 2: KSafe can\'t make sounds</string>
+    <string name="k2_no_sound_hint">Hammerhead\'s Karoo 2 firmware doesn\'t let extensions use the buzzer, so the crash countdown, SOS and reminders are silent. Watch the screen, and map \"KSafe: Cancel Emergency\" to a hardware button for a quick cancel.</string>
+    <string name="k2_no_sound_short">No sound on Karoo 2</string>
 
     <!-- Overlay permission warning -->
     <string name="overlay_permission_title">⚠ Overlay permission required</string>

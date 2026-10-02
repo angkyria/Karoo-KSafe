@@ -44,5 +44,6 @@ class SpeedTraceTest {
         trace.start(50_000L)
         trace.offer(50_000L, 7.5)
         assertEquals("7.5", trace.close())
+        assertEquals("the start survives the close for the row's age", 50_000L, trace.startedAtMs)
     }
 }

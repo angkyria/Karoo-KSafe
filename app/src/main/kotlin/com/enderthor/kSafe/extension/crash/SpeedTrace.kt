@@ -12,12 +12,17 @@ class SpeedTrace(private val periodMs: Long, private val durationMs: Long) {
 
     private var startMs = NOT_STARTED
     private var nextMs = 0L
+
+    /** Start of the most recent trace; kept after it closes so the row can carry its age. */
+    var startedAtMs: Long = 0L
+        private set
     private val values = StringBuilder()
 
     val isOpen: Boolean get() = startMs != NOT_STARTED
 
     fun start(nowMs: Long) {
         startMs = nowMs
+        startedAtMs = nowMs
         nextMs = nowMs
         values.setLength(0)
     }

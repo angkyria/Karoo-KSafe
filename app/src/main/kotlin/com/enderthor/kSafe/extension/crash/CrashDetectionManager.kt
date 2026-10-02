@@ -1261,8 +1261,10 @@ class CrashDetectionManager(
     }
 
     private fun logVigilanceTrace(spd: String, cut: String?) {
+        // open_ms: a trace flushed by a later stop/pause can be logged long after its ARM.
+        val openMs = clock.monotonicMs() - vigilanceTrace.startedAtMs
         calibLogger?.log(CalibrationLogger.Event.VIGILANCE_TRACE) {
-            "period_ms=1000,${if (cut != null) "cut=$cut," else ""}spd=$spd"
+            "period_ms=1000,open_ms=$openMs,${if (cut != null) "cut=$cut," else ""}spd=$spd"
         }
     }
 

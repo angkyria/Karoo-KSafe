@@ -132,6 +132,8 @@ class CrashDetectionManager(
         const val CADENCE_STALE_MS = 10_000L
         const val LOG_INTERVAL_MS = 2_000L
         const val PERIODIC_LOG_INTERVAL_MS = 120_000L  // 2 min — finer timeline resolution
+        /** How long `VIGIL_TRACE` keeps recording after the vigilance window (≈ a countdown). */
+        const val VIGIL_TRACE_AFTER_MS = 30_000L
 
         // ─── Post-IMPACT_TMO dynamic peak-threshold boost ────────────────────
         const val POST_TMO_BOOST = 8.0
@@ -315,6 +317,12 @@ class CrashDetectionManager(
     @Volatile private var vigilanceDeadlineJob: Job? = null
     @Volatile private var vigilanceShadowDeadlineMs: Long = 0L
 
+    /** Diagnostic-only `VIGIL_TRACE` recorder — see [CalibrationLogger.Event.VIGILANCE_TRACE]. */
+    private val vigilanceTrace = SpeedTrace(
+        periodMs = 1_000L,
+        durationMs = stateMachine.thresholds.movingVigilanceWindowMs + VIGIL_TRACE_AFTER_MS,
+    )
+
     /**
      * Whether speed fell below `movingVigilanceSpeedKmh` at ANY sample of the open shadow window.
      * Sticky, because the rule the probe now models (the PRE-2.2.3 rule) escalated on the first
@@ -371,6 +379,7 @@ class CrashDetectionManager(
             cancelVigilanceDeadline()
             confirmCrash(CrashSource.IMPACT_CONFIRMED, alreadyLogged = true)
         }
+        flushVigilanceTrace(cut = "session_restart")
         vigilanceShadowDeadlineMs = 0L
         vigilanceShadowFloorBreach = false
         vigilanceShadowStaleSeen = false
@@ -459,6 +468,7 @@ class CrashDetectionManager(
         }
         movingVigilance.reset()
         cancelVigilanceDeadline()
+        flushVigilanceTrace(cut = "ride_stop")
         vigilanceShadowDeadlineMs = 0L   // never let a pending probe leak into the next ride
         vigilanceShadowFloorBreach = false
         vigilanceShadowStaleSeen = false
@@ -616,6 +626,7 @@ class CrashDetectionManager(
             }
             movingVigilance.reset()
             cancelVigilanceDeadline()
+            flushVigilanceTrace(cut = "manual_pause")
             vigilanceShadowDeadlineMs = 0L
             vigilanceShadowFloorBreach = false
             vigilanceShadowStaleSeen = false
@@ -816,6 +827,8 @@ class CrashDetectionManager(
                         calibLogger?.log(CalibrationLogger.Event.VIGILANCE_ARM) {
                             "sil_mag=%.2f,trust_min=${stateMachine.thresholds.onSideTrustMinAccel},speed=%.1f,window_ms=${stateMachine.thresholds.movingVigilanceWindowMs},spd_age_ms=${now - speedLastChangeMs},floor_kmh=${stateMachine.thresholds.movingVigilanceSpeedKmh},fresh_thr_ms=${stateMachine.thresholds.movingVigilanceSpeedFreshMs},armed=$freshAtArm".formatUs(mag, currentSpeedKmh)
                         }
+                        flushVigilanceTrace(cut = "rearm")
+                        vigilanceTrace.start(clock.monotonicMs())
                         if (!freshAtArm) {
                             // Not armed: the ARM row above is still emitted because its
                             // `spd_age_ms` is the number this guard is measured by, and
@@ -936,8 +949,12 @@ class CrashDetectionManager(
             deviation, sample.gyroMag, currentSpeedKmh)
         calibLogger?.log(CalibrationLogger.Event.SILENCE_ENTER) {
             val ref = stateMachine.preImpactReference
-            "deviation=%.2f,gyro=%.2f,speed=%.1f,gps_stale=${lastGpsStaleState},gap_ms=${stateMachine.firstSilenceGapMs},pre_valid=${ref.valid},pre_x=%.2f,pre_y=%.2f,pre_z=%.2f".formatUs(
-                deviation, sample.gyroMag, currentSpeedKmh, ref.x, ref.y, ref.z)
+            // via/entry_angle/entry_n (2.2.4): which gate let SILENCE_CHECK in. `onside_relax` is the
+            // IMPACT on-side relaxation that ignores speed; its angle is the latch a later CRASH_OK
+            // reports as pre_impact_angle, so a bogus latch at riding speed shows up here first.
+            val via = if (stateMachine.lastSilenceEntryOnSideRelax) "onside_relax" else "speed_drop"
+            "deviation=%.2f,gyro=%.2f,speed=%.1f,gps_stale=${lastGpsStaleState},gap_ms=${stateMachine.firstSilenceGapMs},pre_valid=${ref.valid},pre_x=%.2f,pre_y=%.2f,pre_z=%.2f,via=$via,entry_angle=%.1f,entry_n=${stateMachine.orientationSamples}".formatUs(
+                deviation, sample.gyroMag, currentSpeedKmh, ref.x, ref.y, ref.z, stateMachine.lastOrientationAngleDeg)
         }
     }
 
@@ -1239,6 +1256,16 @@ class CrashDetectionManager(
         speedReachedInWindow = false
     }
 
+    private fun flushVigilanceTrace(cut: String) {
+        vigilanceTrace.close()?.let { logVigilanceTrace(it, cut) }
+    }
+
+    private fun logVigilanceTrace(spd: String, cut: String?) {
+        calibLogger?.log(CalibrationLogger.Event.VIGILANCE_TRACE) {
+            "period_ms=1000,${if (cut != null) "cut=$cut," else ""}spd=$spd"
+        }
+    }
+
     /**
      * Advance the moving-vigilance window and its shadow probe by one step.
      *
@@ -1270,6 +1297,7 @@ class CrashDetectionManager(
         // a bug signal. Sensor batching delivers samples back-to-back, so consecutive drives can be
         // microseconds apart and the straddle is not merely theoretical.
         val nowMono = clock.monotonicMs()
+        vigilanceTrace.offer(nowMono, currentSpeedKmh)?.let { logVigilanceTrace(it, cut = null) }
         // ─── Moving vigilance window (post-confirm, mid-motion) ───────────────
         if (movingVigilance.isArmed) {
             // Require GENUINE speed freshness: the speed value must have changed recently,

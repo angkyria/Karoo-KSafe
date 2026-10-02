@@ -118,6 +118,14 @@ class CalibrationLogger(
          */
         VIGILANCE_SHADOW("VIGIL_SHADOW"),
         /**
+         * Diagnostic-only (2.2.4): speed at 1 Hz from VIGIL_ARM for the 4 s window plus 30 s
+         * after, `spd=20.6|14.2|-|5.7` (`-` = no sample that second). Emitted once per ARM,
+         * whatever the outcome; `cut=` names the reason when it ends early (re-arm, ride
+         * stop, pause, session restart). Exists to tell a rider who braked and rode on
+         * (MTB descents, 2026-10-02 sweep) from a bike that stopped and stayed stopped.
+         */
+        VIGILANCE_TRACE("VIGIL_TRACE"),
+        /**
          * SILENCE_CHECK timed out — device entered the silence phase but never achieved
          * uninterrupted stillness within the double-window period → false alarm at stage 3.
          * Distinct from IMPACT_TMO (which fires before entering SILENCE_CHECK at all).

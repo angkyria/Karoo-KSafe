@@ -4,7 +4,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.view.Gravity
 import android.view.View
 import android.widget.RemoteViews
 import com.enderthor.kSafe.R
@@ -100,8 +99,6 @@ class CombinedFuelLogDataType(
             setTextViewText(R.id.field_text_main, main.safeTake(9))
             setTextViewText(R.id.field_text_hint, hint.safeTake(9))
             setViewVisibility(R.id.field_text_hint, if (hint.isEmpty()) View.GONE else View.VISIBLE)
-            setInt(R.id.field_text_main, "setGravity", Gravity.CENTER)
-            setInt(R.id.field_text_hint, "setGravity", Gravity.CENTER)
             if (isAuto) {
                 val dark = context.isKarooNightMode()
                 setTextColor(R.id.field_text_main, if (dark) Color.WHITE else Color.BLACK)

@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Generic field view with auto-sizing text — COLOURED MODE.
-  Background colour, text gravity and hint visibility are set programmatically via
-  RemoteViews. Text colour is hard-coded white because this layout is paired with a
+  Background colour and hint visibility are set programmatically via RemoteViews.
+  Text colour is hard-coded white because this layout is paired with a
   rider-picked dark background (≥4.5:1 contrast). For Karoo-theme passthrough (no
   custom background, theme-driven text colour), the DataType inflates field_view_auto.xml
   instead — selected at runtime per emission via the FIELD_COLOR_AUTO sentinel.
 
-  Gravity is NOT set in this XML: it's applied at runtime from ViewConfig.alignment
-  (LEFT / CENTER / RIGHT — rider's per-field choice in the Karoo profile editor) via
-  setInt(R.id.field_text_*, "setGravity", …). karoo-ext 1.1.2+ ships alignment in
-  ViewConfig; before that the SDK passed only RIGHT, so older devices fall back to
-  the same default Karoo uses for native fields.
+  Text gravity is set HERE (center) and must never be set through RemoteViews:
+  TextView.setGravity() only became a @RemotableViewMethod in Android 12 (API 31). On
+  older hosts such as the Karoo 2 (Android 8.1) a setInt(R.id.field_text_*, "setGravity", …)
+  action throws ActionException while the ride app applies the RemoteViews, so the
+  whole field — text, colour and tap PendingIntent — fails to render and taps never
+  reach KSafe (host log: "Extensions: Error in view for TYPE_EXT::ksafe::…").
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/field_container"
@@ -29,6 +30,7 @@
         android:autoSizeMaxTextSize="22sp"
         android:autoSizeMinTextSize="6sp"
         android:autoSizeTextType="uniform"
+        android:gravity="center"
         android:maxLines="2"
         android:textColor="#FFFFFF"
         android:textStyle="bold" />
@@ -45,6 +47,7 @@
         android:autoSizeMaxTextSize="13sp"
         android:autoSizeMinTextSize="7sp"
         android:autoSizeTextType="uniform"
+        android:gravity="center"
         android:maxLines="1"
         android:textColor="#CCFFFFFF" />
 

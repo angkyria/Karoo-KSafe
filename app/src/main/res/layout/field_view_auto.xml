@@ -16,8 +16,8 @@
       text on a white field, invisible). Detecting night mode from the extension's
       Configuration is system-wide and matches what the Karoo OS actually renders.
 
-  Same gravity contract as field_view.xml: not set in XML, applied at runtime from
-  ViewConfig.alignment via setInt(R.id.field_text_*, "setGravity", …).
+  Same gravity contract as field_view.xml: centered here in XML, never via RemoteViews
+  (TextView.setGravity is not remotable before API 31 — breaks the field on Karoo 2).
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/field_container"
@@ -34,6 +34,7 @@
         android:autoSizeMaxTextSize="22sp"
         android:autoSizeMinTextSize="6sp"
         android:autoSizeTextType="uniform"
+        android:gravity="center"
         android:maxLines="2"
         android:textColor="#FFFFFF"
         android:textStyle="bold" />
@@ -48,6 +49,7 @@
         android:autoSizeMaxTextSize="13sp"
         android:autoSizeMinTextSize="7sp"
         android:autoSizeTextType="uniform"
+        android:gravity="center"
         android:maxLines="1"
         android:textColor="#CCFFFFFF" />
 

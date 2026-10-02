@@ -191,6 +191,16 @@ class CrashStateMachine(
     @Volatile private var orientationSumZ: Double = 0.0
     @Volatile private var orientationSampleCount: Int = 0
 
+    /** Read-only view of [orientationSampleCount] for the SIL_IN calibration row. */
+    val orientationSamples: Int get() = orientationSampleCount
+
+    /**
+     * Whether the last IMPACT → SILENCE_CHECK transition went through the on-side relaxation
+     * (speed gate bypassed) rather than the speed-drop gate. Diagnostic only (SIL_IN `via=`).
+     */
+    @Volatile var lastSilenceEntryOnSideRelax: Boolean = false
+        private set
+
     /**
      * Latched silence-duration choice for the current SILENCE_CHECK window.
      * `0L` means "not yet decided" (cold start or just-reset window). Once
@@ -712,6 +722,7 @@ class CrashStateMachine(
         val gateOk = accelOk && gyroOk && timeOk && (speedDropOk || onSideRelaxed)
         if (gateOk) {
             state = State.SILENCE_CHECK
+            lastSilenceEntryOnSideRelax = onSideRelaxed
             silenceStartedMs = now
             // First (and only) IMPACT → SILENCE_CHECK transition of this event:
             // freeze how long the rider kept moving after the impact.

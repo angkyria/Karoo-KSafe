@@ -82,7 +82,7 @@ const val KAROO_LIVE_BASE_URL = "https://dashboard.hammerhead.io/live/"
  *  v16 → v17: carbDeficitReminderIntervalMin / hydrationDeficitReminderIntervalMin added
  *             (default 10 min — deliberately less aggressive than the historical
  *             hard-coded 5 min cooldown, which riders found too frequent on long
- *             endurance rides). The trackers' internal `evaluateTimeAlert` semantics also
+ *             endurance rides). The trackers' internal `fireTimeAlert` semantics also
  *             change to a grid-aligned pure-interval timer: ticks at
  *             `sessionStartMs + N * intervalMs`. The initial-delay configuration
  *             FILTERS ticks whose timestamp would be earlier than

@@ -30,6 +30,9 @@ Event catalogue understood by this script:
     staleness rule would have reached. Compare against the real VIGIL_ESCALATE:
     an early escalate (spd_age_ms already past fresh_thr_ms at arm) paired with
     would_be=CLEAR is an FP that deferring the verdict would have suppressed)
+    VIGIL_TRACE (2.2.4, diagnostic only: speed at 1 Hz from ARM for window+30 s,
+    spd=a|b|-|c, cut= when ended early). SIL_IN gained via=onside_relax|speed_drop,
+    entry_angle, entry_n.
 
   Speed-drop watchdog (added 2026-05):
     SPDRP_EVAL (SPEEDDROP_EVAL), SPDRP_WSTART (SPEEDDROP_WIN_START),
@@ -47,6 +50,10 @@ Event catalogue understood by this script:
     HYD_START / HYD_LOG / HYD_UNDO / HYD_FIRE / HYD_PERIODIC
     FUEL_QUIET  — a time-grid reminder was due but the 3-min quiet window
                   swallowed it (a deficit alert had just fired). Never a fire.
+                  Since 2.2.4 also reason=deficit_wins: a deficit alert fired at its
+                  own time and consumed a due time tick (same tick, or one held because
+                  that deficit was imminent); reason=logged_after_tick: a held/late
+                  tick dropped because the rider logged after its grid point.
 
   Emergency dispatch:
     EMERG_TRIG (EMERGENCY_TRIGGERED), ALERT_FAIL (ALERT_DELIVERY_FAILED),
@@ -597,7 +604,7 @@ def _print_per_file(summaries: list[FileSummary]):
 
         _print_payload_block(
             "FUELING TIME REMINDER QUIETED (not fired)", fs.fueling_quieted_payloads,
-            fields=("kind", "since_deficit_ms"),
+            fields=("kind", "reason", "since_deficit_ms"),
         )
 
         # Fueling periodic + cadence-gate-suppressed counts — compact one-liners.

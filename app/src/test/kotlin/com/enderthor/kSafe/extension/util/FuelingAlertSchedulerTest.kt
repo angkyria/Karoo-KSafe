@@ -524,6 +524,65 @@ class FuelingAlertSchedulerTest {
         )
     }
 
+    // ── shouldFireDeficit lookahead (time → deficit direction) ────────────────
+
+    @Test
+    fun `a deficit alert due within the lookahead is pulled forward onto a time tick`() {
+        // Field ride aa23ea_11b571 (2026-10-02 sweep): the time reminder fired and the
+        // deficit one 15 s later with the same number. Here the backed-off deficit is due
+        // at 80 min (fired at 40, two unacked -> x2 of 20 min) and a time tick lands 15 s
+        // earlier: with the lookahead the deficit fires now and the time tick is consumed.
+        fun due(lookaheadMs: Long) = FuelingAlertScheduler.shouldFireDeficit(
+            enabled = true,
+            deficit = 972, deficitThreshold = 300,
+            lastDeficitAlertFireMs = 40L * 60_000L,
+            reminderIntervalMs = 20L * 60_000L,
+            initialDelayMs = 30L * 60_000L, cumLogged = 0,
+            sessionStartMs = 0L,
+            now = 80L * 60_000L - 15_000L,
+            unackedFires = 2,
+            lastRealLogMs = 0L,
+            lookaheadMs = lookaheadMs,
+        )
+        assertFalse("without lookahead the deficit is not due yet", due(0L))
+        assertTrue("within the quiet window it is pulled forward", due(FuelingAlertScheduler.QUIET_WINDOW_MS))
+    }
+
+    @Test
+    fun `the lookahead never pulls a deficit alert from beyond the window`() {
+        assertFalse(
+            "due 4 min from now is outside a 3-min lookahead",
+            FuelingAlertScheduler.shouldFireDeficit(
+                enabled = true,
+                deficit = 500, deficitThreshold = 300,
+                lastDeficitAlertFireMs = 40L * 60_000L,
+                reminderIntervalMs = 20L * 60_000L,
+                initialDelayMs = 0L, cumLogged = 0,
+                sessionStartMs = 0L,
+                now = 56L * 60_000L,
+                unackedFires = 1,
+                lookaheadMs = FuelingAlertScheduler.QUIET_WINDOW_MS,
+            )
+        )
+    }
+
+    @Test
+    fun `the lookahead never bypasses the threshold or the initial delay`() {
+        fun due(deficit: Int, nowMin: Long) = FuelingAlertScheduler.shouldFireDeficit(
+            enabled = true,
+            deficit = deficit, deficitThreshold = 300,
+            lastDeficitAlertFireMs = 0L,
+            reminderIntervalMs = 20L * 60_000L,
+            initialDelayMs = 30L * 60_000L, cumLogged = 0,
+            sessionStartMs = 0L,
+            now = nowMin * 60_000L,
+            lookaheadMs = FuelingAlertScheduler.QUIET_WINDOW_MS,
+        )
+        assertFalse("below the threshold nothing is pulled forward", due(deficit = 299, nowMin = 40))
+        assertFalse("the rider's initial delay is honoured to the minute", due(deficit = 500, nowMin = 28))
+        assertTrue("sanity: past the delay and over the threshold", due(deficit = 500, nowMin = 30))
+    }
+
     // ── suppressedByRecentAlert (time-alert quiet window) ─────────────────────
 
     @Test

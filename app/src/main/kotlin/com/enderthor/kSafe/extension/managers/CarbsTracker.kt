@@ -753,9 +753,18 @@ class CarbsTracker(
         // must never fire a carb deficit/time alert, even though carbDeficitAlertEnabled
         // defaults to true. Enabling/disabling HR-calories has no effect on these.
         if (config.carbsTrackerEnabled) {
-            val deficitFired = evaluateDeficitAlert(now)
+            // A time tick about to fire lets a deficit alert due within the quiet window go out
+            // now in its place (one beep instead of two). Not when the tick is itself about to
+            // be quieted by a recent deficit — that would just shorten the deficit cooldown.
+            val timeTickWillFire = currentDueTimeTick(now) != 0L &&
+                !FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)
+            val deficitFired = evaluateDeficitAlert(
+                now, lookaheadMs = if (timeTickWillFire) FuelingAlertScheduler.QUIET_WINDOW_MS else 0L)
             if (deficitFired) {
                 if (currentDueTimeTick(now) != 0L) {
+                    calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                        "kind=carb,reason=deficit_wins"
+                    }
                     // Mark the time tick consumed: `now >= currentTickAt` (otherwise
                     // currentDueTimeTick would have returned 0L), so setting
                     // `lastTimeAlertFireMs = now` satisfies the "already fired this
@@ -780,7 +789,7 @@ class CarbsTracker(
      *  in [tick] uses the return value to coordinate coincidence resolution with
      *  the time-alert path (deficit wins; if a time tick was due in the same
      *  tick it gets consumed silently). */
-    private fun evaluateDeficitAlert(now: Long): Boolean {
+    private fun evaluateDeficitAlert(now: Long, lookaheadMs: Long = 0L): Boolean {
         // v18.2 B9 — gate delegated to [FuelingAlertScheduler.shouldFireDeficit]
         // (pure helper) so the same shape is single-sourced with the hydration
         // tracker and unit-tested in `FuelingAlertSchedulerTest`. The deficit is
@@ -805,6 +814,7 @@ class CarbsTracker(
             now                    = now,
             unackedFires           = deficitFiresSinceLog,
             lastRealLogMs          = lastRealLogMs,
+            lookaheadMs            = lookaheadMs,
         )
         if (!fire) return false
         // Defer during an emergency: don't beep over the SOS, and DON'T stamp the cooldown,

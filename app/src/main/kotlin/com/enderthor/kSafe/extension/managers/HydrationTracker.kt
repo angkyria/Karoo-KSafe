@@ -600,9 +600,18 @@ class HydrationTracker(
         // (the time alert visually replacing the deficit one) and the rider would
         // hear two beeps but read only the less informative message — worst of both
         // worlds. Same shape in `CarbsTracker.tick`.
-        val deficitFired = evaluateDeficitAlert(now)
+        // A time tick about to fire lets a deficit alert due within the quiet window go out
+        // now in its place (one beep instead of two). Not when the tick is itself about to
+        // be quieted by a recent deficit — that would just shorten the deficit cooldown.
+        val timeTickWillFire = currentDueTimeTick(now) != 0L &&
+            !FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)
+        val deficitFired = evaluateDeficitAlert(
+            now, lookaheadMs = if (timeTickWillFire) FuelingAlertScheduler.QUIET_WINDOW_MS else 0L)
         if (deficitFired) {
             if (currentDueTimeTick(now) != 0L) {
+                calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                    "kind=hyd,reason=deficit_wins"
+                }
                 // Mark the time tick as consumed. Setting `lastTimeAlertFireMs = now`
                 // is sufficient because `currentDueTimeTick` requires
                 // `lastTimeAlertFireMs < currentTickAt` to consider a tick due, and
@@ -625,7 +634,7 @@ class HydrationTracker(
      *  in [tick] uses the return value to coordinate coincidence resolution with
      *  the time-alert path (deficit wins; if a time tick was due in the same
      *  tick it gets consumed silently). */
-    private fun evaluateDeficitAlert(now: Long): Boolean {
+    private fun evaluateDeficitAlert(now: Long, lookaheadMs: Long = 0L): Boolean {
         // v18.2 B9 — gate delegated to [FuelingAlertScheduler.shouldFireDeficit]
         // so the carb and hydration deficit logic is single-sourced and unit-
         // tested in `FuelingAlertSchedulerTest`. Mirrors `CarbsTracker.evaluateDeficitAlert`.
@@ -650,6 +659,7 @@ class HydrationTracker(
             now                    = now,
             unackedFires           = deficitFiresSinceLog,
             lastRealLogMs          = lastRealLogMs,
+            lookaheadMs            = lookaheadMs,
         )
         if (!fire) return false
         // Defer during an emergency: don't beep over the SOS, and DON'T stamp the cooldown,

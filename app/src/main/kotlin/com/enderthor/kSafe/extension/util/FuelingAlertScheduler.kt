@@ -122,6 +122,15 @@ internal object FuelingAlertScheduler {
      * never exceeds the x(1 shl MAX_BACKOFF_SHIFT) ceiling however often the rider logs.
      * Defaulted to 0 for callers that do not track it (tests); no production caller
      * passes 0, since both trackers seed the field in `start()`.
+     *
+     * [lookaheadMs] asks "is the reminder due within this long?" instead of "due now".
+     * It is the other half of the quiet window: [suppressedByRecentAlert] stops a time
+     * reminder right after a deficit one, but a time reminder followed seconds later by
+     * the deficit one still beeped twice (2026-10-02 sweep, `aa23ea_11b571`: 15 s apart,
+     * same number). The trackers pass [QUIET_WINDOW_MS] only when a time tick is about to
+     * fire, so the deficit alert goes out early and takes the tick's place — pulled
+     * forward, never suppressed. It shortens the cooldown only: the threshold and the
+     * rider's initial delay are still judged at the real `now`.
      */
     fun shouldFireDeficit(
         enabled: Boolean,
@@ -135,6 +144,7 @@ internal object FuelingAlertScheduler {
         now: Long,
         unackedFires: Int = 0,
         lastRealLogMs: Long = 0L,
+        lookaheadMs: Long = 0L,
     ): Boolean {
         if (!enabled) return false
         // Initial-delay grace: only blocks the first fire AND only while no log
@@ -156,7 +166,7 @@ internal object FuelingAlertScheduler {
             if (lastDeficitAlertFireMs == 0L) lastDeficitAlertFireMs
             else maxOf(lastDeficitAlertFireMs, minOf(lastRealLogMs, latestLogAnchor))
         val backoffShift = (unackedFires - 1).coerceIn(0, MAX_BACKOFF_SHIFT)
-        if (now - cooldownFrom < (reminderIntervalMs shl backoffShift)) return false
+        if (now + lookaheadMs - cooldownFrom < (reminderIntervalMs shl backoffShift)) return false
         return true
     }
 

@@ -251,6 +251,10 @@ internal object FuelingAlertScheduler {
      *  - **Logged after the tick**: a held or emergency-deferred time tick the rider has since
      *    logged after is consumed — "time to drink" seconds after drinking is the exact
      *    complaint the 2.2.3 initial-delay rule fixed, and the hold must not reintroduce it.
+     *    Applies to any late-evaluated tick, not only held ones. Accepted edge: a combined-field
+     *    undo keeps `lastRealLogMs`, so a log+undo inside that gap still drops the reminder.
+     *  - With a time interval under [QUIET_WINDOW_MS], a held tick can be superseded by the next
+     *    grid point and vanish with no FUEL_QUIET row; the count is still never above 2.2.3.
      *
      * [deficitDueWithin] is [shouldFireDeficit] for the tracker's state with the given
      * `lookaheadMs`; [timeTickAtMs] is [currentDueTimeTick] (0 = none due).

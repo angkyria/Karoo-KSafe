@@ -110,7 +110,7 @@ internal object FuelingAlertScheduler {
      * [unackedFires] is how many deficit alerts have fired since the rider last
      * logged anything. 0 or 1 → the configured [reminderIntervalMs]; 2 → ×2;
      * 3 or more → ×4 (the cap). The caller owns the counter and resets it on any
-     * log — see `HydrationTracker.evaluateDeficitAlert`.
+     * log — see `HydrationTracker.tick`.
      *
      * [lastRealLogMs] restarts the cooldown from the rider's last log. Without it,
      * dropping the ladder back to ×1 on a log can leave an already-elapsed cooldown
@@ -124,13 +124,9 @@ internal object FuelingAlertScheduler {
      * passes 0, since both trackers seed the field in `start()`.
      *
      * [lookaheadMs] asks "is the reminder due within this long?" instead of "due now".
-     * It is the other half of the quiet window: [suppressedByRecentAlert] stops a time
-     * reminder right after a deficit one, but a time reminder followed seconds later by
-     * the deficit one still beeped twice (2026-10-02 sweep, `aa23ea_11b571`: 15 s apart,
-     * same number). The trackers pass [QUIET_WINDOW_MS] only when a time tick is about to
-     * fire, so the deficit alert goes out early and takes the tick's place — pulled
-     * forward, never suppressed. It shortens the cooldown only: the threshold and the
-     * rider's initial delay are still judged at the real `now`.
+     * Used only by [resolveTick] to decide whether to HOLD a time tick; it never makes a
+     * deficit alert fire early. It shortens the cooldown check only: the threshold and
+     * the rider's initial delay are still judged at the real `now`.
      */
     fun shouldFireDeficit(
         enabled: Boolean,
@@ -217,4 +213,63 @@ internal object FuelingAlertScheduler {
     fun suppressedByRecentAlert(lastDeficitAlertFireMs: Long, now: Long): Boolean =
         lastDeficitAlertFireMs > 0L && now >= lastDeficitAlertFireMs &&
             now - lastDeficitAlertFireMs < QUIET_WINDOW_MS
+
+    /** What a tracker's tick must do with its two alert channels. See [resolveTick]. */
+    enum class TickAction {
+        /** Nothing due, a time tick held, or an emergency deferring both channels. */
+        NONE,
+        /** Fire the deficit alert; if a time tick is also due, consume it silently. */
+        FIRE_DEFICIT,
+        FIRE_TIME,
+        /** Consume the time tick silently: a deficit alert fired < [QUIET_WINDOW_MS] ago. */
+        QUIET_AFTER_DEFICIT,
+        /** Consume the time tick silently: the rider logged after its grid point. */
+        QUIET_LOGGED,
+    }
+
+    /**
+     * The per-tick decision shared by `CarbsTracker.tick` and `HydrationTracker.tick`. Pure:
+     * the tracker owns the stamping (`lastDeficitAlertFireMs`, `lastTimeAlertFireMs`) and the
+     * dispatch; this only says which to do.
+     *
+     *  - **Emergency** defers both channels and consumes nothing — a reminder never beeps over
+     *    an SOS and is never eaten by one; it re-evaluates once the emergency clears.
+     *  - **Deficit wins** a same-tick coincidence (v17): its "N behind" is the actionable
+     *    message, and the time tick is consumed so the rider hears one beep.
+     *  - **Quiet window** ([suppressedByRecentAlert]): a time tick right after a deficit alert is
+     *    consumed. One-way: nothing here ever suppresses or moves a deficit alert.
+     *  - **Hold** (2.2.4, the other direction): a time tick whose deficit alert is due within
+     *    [QUIET_WINDOW_MS] of the tick's grid point is held (NONE) instead of fired; the deficit
+     *    then fires at its own time and the same-tick rule consumes the held tick. Field ride
+     *    `aa23ea_11b571` (2026-10-02 sweep) got the time reminder and the deficit one 15 s
+     *    apart, same number, twice. Holding the TIME tick — rather than pulling the deficit
+     *    forward — keeps the deficit schedule exactly as before, so the alert count can only
+     *    fall (pulling forward shifted later deficits and could ADD alerts: T=8/D=10 min gave
+     *    27 instead of 24 in 3 h). Cost: a time reminder can arrive up to 3 min late, and only
+     *    when a deficit alert was about to replace it anyway — e.g. the rider logs during the
+     *    hold, the deficit is no longer due, and the tick fires (or is dropped, next rule).
+     *  - **Logged after the tick**: a held or emergency-deferred time tick the rider has since
+     *    logged after is consumed — "time to drink" seconds after drinking is the exact
+     *    complaint the 2.2.3 initial-delay rule fixed, and the hold must not reintroduce it.
+     *
+     * [deficitDueWithin] is [shouldFireDeficit] for the tracker's state with the given
+     * `lookaheadMs`; [timeTickAtMs] is [currentDueTimeTick] (0 = none due).
+     */
+    fun resolveTick(
+        deficitDueWithin: (lookaheadMs: Long) -> Boolean,
+        timeTickAtMs: Long,
+        lastDeficitAlertFireMs: Long,
+        lastRealLogMs: Long,
+        emergencyActive: Boolean,
+        now: Long,
+    ): TickAction {
+        if (emergencyActive) return TickAction.NONE
+        if (deficitDueWithin(0L)) return TickAction.FIRE_DEFICIT
+        if (timeTickAtMs == 0L) return TickAction.NONE
+        if (suppressedByRecentAlert(lastDeficitAlertFireMs, now)) return TickAction.QUIET_AFTER_DEFICIT
+        if (lastRealLogMs > timeTickAtMs && lastRealLogMs <= now) return TickAction.QUIET_LOGGED
+        val holdLeftMs = timeTickAtMs + QUIET_WINDOW_MS - now
+        if (holdLeftMs > 0L && deficitDueWithin(holdLeftMs)) return TickAction.NONE
+        return TickAction.FIRE_TIME
+    }
 }

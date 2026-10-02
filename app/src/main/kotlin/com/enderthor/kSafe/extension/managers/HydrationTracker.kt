@@ -85,7 +85,7 @@ class HydrationTracker(
     @Volatile private var lastTickMs = 0L
     /**
      * Wall-clock ms of the last rider log OR the last time-alert fire (F1 fix —
-     * see [evaluateTimeAlert]). Drives the time-alert interval gate, so treating
+     * see [fireTimeAlert]). Drives the time-alert interval gate, so treating
      * an unacknowledged fire as a soft "time mark" is what keeps "alert me every
      * N minutes" honest when the rider misses logs (without it the interval gate
      * stays latched-open after the first fire and the 5-min cooldown becomes the
@@ -98,7 +98,7 @@ class HydrationTracker(
     // v18 L1: `lastAlertMs` removed — see CarbsTracker comment for rationale.
     /**
      * Wall-clock ms when a TIME-source alert last fired in this session. Drives the
-     * pure-interval gate in [evaluateTimeAlert]:
+     * pure-interval gate in [currentDueTimeTick]:
      * `now - lastTimeAlertFireMs >= intervalMs`. **Critically not updated by rider
      * logs** — the v17 user-facing semantics is "remind me every N minutes",
      * independent of when the rider last drank. 0 = no time alert has fired yet
@@ -591,38 +591,57 @@ class HydrationTracker(
         }
         lastTickMs = now
 
-        // v17 coincidence resolution: when a deficit alert and a time-grid tick are
-        // both due in the same physical tick, the deficit alert wins (it carries the
-        // more actionable info — a numeric deficit beats "X min since last drink").
-        // The time-grid tick is "consumed" silently so the next tick doesn't re-fire
-        // the time alert back-to-back. Without this, both `evaluateXxxAlert` calls
-        // would dispatch their own `InRideAlert`: the Karoo SDK would overlay them
-        // (the time alert visually replacing the deficit one) and the rider would
-        // hear two beeps but read only the less informative message — worst of both
-        // worlds. Same shape in `CarbsTracker.tick`.
-        // A time tick about to fire lets a deficit alert due within the quiet window go out
-        // now in its place (one beep instead of two). Not when the tick is itself about to
-        // be quieted by a recent deficit — that would just shorten the deficit cooldown.
-        val timeTickWillFire = currentDueTimeTick(now) != 0L &&
-            !FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)
-        val deficitFired = evaluateDeficitAlert(
-            now, lookaheadMs = if (timeTickWillFire) FuelingAlertScheduler.QUIET_WINDOW_MS else 0L)
-        if (deficitFired) {
-            if (currentDueTimeTick(now) != 0L) {
-                calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
-                    "kind=hyd,reason=deficit_wins"
+        // Alert channels. The decision — emergency deferral, deficit wins a same-tick
+        // coincidence (v17), quiet window after a deficit alert, the 2.2.4 hold of a time tick
+        // whose deficit alert is about to replace it, and dropping a tick the rider logged after —
+        // lives in the pure [FuelingAlertScheduler.resolveTick] so it is unit-tested with a
+        // multi-tick simulation. This only stamps and dispatches. Same shape in `CarbsTracker.tick`.
+        //
+        // Back-off bookkeeping first (2026-07-22 field sweep: 13 unacknowledged prompts in one
+        // hour on install `1136e7`). Anchoring on `lastRealLogMs` rather than resetting inside
+        // every log path means logEntry / logAmount / undo are all covered automatically.
+        if (lastRealLogMs != backoffAnchorLogMs) {
+            backoffAnchorLogMs = lastRealLogMs
+            deficitFiresSinceLog = 0
+        }
+        val timeTickAt = currentDueTimeTick(now)
+        when (FuelingAlertScheduler.resolveTick(
+            deficitDueWithin = { deficitDue(now, lookaheadMs = it) },
+            timeTickAtMs = timeTickAt,
+            lastDeficitAlertFireMs = lastDeficitAlertFireMs,
+            lastRealLogMs = lastRealLogMs,
+            emergencyActive = isEmergencyActive(),
+            now = now,
+        )) {
+            FuelingAlertScheduler.TickAction.FIRE_DEFICIT -> {
+                fireDeficitAlert(now)
+                if (timeTickAt != 0L) {
+                    // Consume the coinciding (or held) time tick so the rider hears one beep.
+                    // `lastTimeAlertFireMs = now` satisfies currentDueTimeTick's "already fired
+                    // this tick" guard and leaves the next grid point untouched.
+                    calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                        "kind=hyd,reason=deficit_wins"
+                    }
+                    lastTimeAlertFireMs = now
                 }
-                // Mark the time tick as consumed. Setting `lastTimeAlertFireMs = now`
-                // is sufficient because `currentDueTimeTick` requires
-                // `lastTimeAlertFireMs < currentTickAt` to consider a tick due, and
-                // `now >= currentTickAt` is the entry condition of `currentDueTimeTick`
-                // returning non-zero. The next time tick (at sessionStartMs + (N+1) *
-                // interval) is unaffected because `lastTimeAlertFireMs` will then be
-                // strictly less than that newer `currentTickAt`.
+            }
+            FuelingAlertScheduler.TickAction.FIRE_TIME -> fireTimeAlert(now)
+            FuelingAlertScheduler.TickAction.QUIET_AFTER_DEFICIT -> {
+                calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                    "kind=hyd,since_deficit_ms=${now - lastDeficitAlertFireMs}"
+                }
+                // Consuming the tick also re-anchors `{elapsed}` of the NEXT time alert to a
+                // reminder the rider never heard. Pre-existing from the v17 same-tick rule;
+                // not worth a second anchor field for one rendered token.
                 lastTimeAlertFireMs = now
             }
-        } else {
-            evaluateTimeAlert(now)
+            FuelingAlertScheduler.TickAction.QUIET_LOGGED -> {
+                calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
+                    "kind=hyd,reason=logged_after_tick"
+                }
+                lastTimeAlertFireMs = now
+            }
+            FuelingAlertScheduler.TickAction.NONE -> { /* nothing due, a held tick, or deferred by an emergency */ }
         }
         maybePeriodicLog(now)
         // See CarbsTracker.tick — re-publish to drive the status data fields off
@@ -630,24 +649,12 @@ class HydrationTracker(
         publishStatus()
     }
 
-    /** Returns true when an alert was actually dispatched in this call. The caller
-     *  in [tick] uses the return value to coordinate coincidence resolution with
-     *  the time-alert path (deficit wins; if a time tick was due in the same
-     *  tick it gets consumed silently). */
-    private fun evaluateDeficitAlert(now: Long, lookaheadMs: Long = 0L): Boolean {
-        // v18.2 B9 — gate delegated to [FuelingAlertScheduler.shouldFireDeficit]
-        // so the carb and hydration deficit logic is single-sourced and unit-
-        // tested in `FuelingAlertSchedulerTest`. Mirrors `CarbsTracker.evaluateDeficitAlert`.
-        // Back-off bookkeeping (2026-07-22 field sweep: 13 unacknowledged prompts in
-        // one hour on install `1136e7`). Anchoring on `lastRealLogMs` rather than
-        // resetting inside every log path means logEntry / logAmount / undo are all
-        // covered automatically — and so is any future log path.
-        if (lastRealLogMs != backoffAnchorLogMs) {
-            backoffAnchorLogMs = lastRealLogMs
-            deficitFiresSinceLog = 0
-        }
+    /** Pure read: is the deficit alert due now, or within [lookaheadMs]? Gate delegated to
+     *  [FuelingAlertScheduler.shouldFireDeficit] (v18.2 B9) so carbs and hydration share it
+     *  and it is unit-tested; the back-off counter is refreshed in [tick] before this runs. */
+    private fun deficitDue(now: Long, lookaheadMs: Long): Boolean {
         val deficit = (cumTargetMl - cumLoggedMl).toInt()
-        val fire = FuelingAlertScheduler.shouldFireDeficit(
+        return FuelingAlertScheduler.shouldFireDeficit(
             enabled                = config.hydrationDeficitAlertEnabled,
             deficit                = deficit,
             deficitThreshold       = config.hydrationDeficitThresholdMl,
@@ -661,17 +668,15 @@ class HydrationTracker(
             lastRealLogMs          = lastRealLogMs,
             lookaheadMs            = lookaheadMs,
         )
-        if (!fire) return false
-        // Defer during an emergency: don't beep over the SOS, and DON'T stamp the cooldown,
-        // so the alert re-fires on the next tick once the emergency clears (not lost).
-        if (isEmergencyActive()) {
-            Timber.d("Hydration deficit alert due but emergency active — deferring (not fired, cooldown intact)")
-            return false
-        }
+    }
+
+    /** Dispatch the deficit alert and stamp its cooldown. Only [tick] calls this, after
+     *  [FuelingAlertScheduler.resolveTick] said so (never during an emergency). */
+    private fun fireDeficitAlert(now: Long) {
+        val deficit = (cumTargetMl - cumLoggedMl).toInt()
         fireAlert("deficit", deficit, elapsedMinutesSinceRealLog(now))
         lastDeficitAlertFireMs = now
         deficitFiresSinceLog++
-        return true
     }
 
     /** See [CarbsTracker.elapsedMinutesSinceRealLog] for the contract and the B33
@@ -683,7 +688,7 @@ class HydrationTracker(
 
     /** See [CarbsTracker.elapsedMinutesSinceLastTimeAlert] for the rationale —
      *  same two-anchor pattern (last fire or session start) and same defensive
-     *  guards. Used by [evaluateTimeAlert] so `{elapsed}` reads as "min since
+     *  guards. Used by [fireTimeAlert] so `{elapsed}` reads as "min since
      *  last reminder", aligned with the interval-grid fire schedule. */
     private fun elapsedMinutesSinceLastTimeAlert(now: Long): Long {
         val anchor = if (lastTimeAlertFireMs > 0L) lastTimeAlertFireMs else sessionStartMs
@@ -695,7 +700,7 @@ class HydrationTracker(
      * Returns the grid-tick timestamp that would fire in this call, or `0L` when
      * no tick is currently due (alert disabled, before the first tick, already
      * fired this tick, or filtered by the initial-delay window). Pure read —
-     * mutates nothing. Used by both [evaluateTimeAlert] (to gate firing) and by
+     * mutates nothing. Used by [tick] (to gate firing, via [FuelingAlertScheduler.resolveTick]) and by
      * [tick]'s coincidence resolution (to detect that a time tick is being
      * silently consumed in favour of a same-tick deficit alert).
      *
@@ -716,46 +721,12 @@ class HydrationTracker(
         lastRealLogMs = lastRealLogMs,
     )
 
-    /** See [evaluateDeficitAlert] return-value note — same contract on the time side. */
-    private fun evaluateTimeAlert(now: Long): Boolean {
-        if (currentDueTimeTick(now) == 0L) return false
-        // Defer during an emergency (see evaluateDeficitAlert) — not fired, tick not consumed.
-        // ORDER IS DELIBERATE: this runs BEFORE the quiet-window guard below, so a tick
-        // that was due mid-emergency is deferred rather than consumed. Do not flip it to
-        // "consume first" — that would silently eat a fueling reminder while the rider is
-        // in an SOS countdown, and it would break the invariant the deficit path also
-        // honours (an emergency defers, it never consumes). The deferred tick fires when
-        // the emergency clears, and the guard below runs again then: still inside the
-        // window → consumed, outside it → fires, which is >QUIET_WINDOW_MS after the
-        // deficit beep either way. Known cost: that overlap produces no FUEL_QUIET row.
-        if (isEmergencyActive()) {
-            Timber.d("Hydration time alert due but emergency active — deferring")
-            return false
-        }
-        // Quiet window: a deficit alert moments ago already told the rider the
-        // actionable version of this message, so the grid reminder is noise.
-        // One-way by design — the deficit alert is never suppressed (see
-        // [FuelingAlertScheduler.suppressedByRecentAlert]). Consuming the tick
-        // (not deferring it) matches the same-tick "deficit wins" rule in [tick].
-        if (FuelingAlertScheduler.suppressedByRecentAlert(lastDeficitAlertFireMs, now)) {
-            Timber.d("Hydration time alert due but a deficit alert just fired — consuming tick (quiet window)")
-            calibLogger?.log(CalibrationLogger.Event.FUELING_ALERT_QUIETED) {
-                "kind=hyd,since_deficit_ms=${now - lastDeficitAlertFireMs}"
-            }
-            // Consuming the tick also re-anchors `elapsedMinutesSinceLastTimeAlert`,
-            // so the NEXT time alert's `{elapsed}` counts from a reminder the rider
-            // never heard. Pre-existing from the v17 same-tick rule, widened by the
-            // window; not worth a second anchor field for one rendered token.
-            lastTimeAlertFireMs = now
-            return false
-        }
-        // See CarbsTracker.evaluateTimeAlert — time alert is interval-driven,
-        // so `{elapsed}` measures since the last reminder, not since last log.
+    /** Dispatch the time-grid alert and stamp the tick. Only [tick] calls this, after
+     *  [FuelingAlertScheduler.resolveTick] said so. `{elapsed}` measures since the last
+     *  reminder (interval-driven), and `lastRealLogMs` stays untouched (I8). */
+    private fun fireTimeAlert(now: Long) {
         fireAlert("time", (cumTargetMl - cumLoggedMl).toInt(), elapsedMinutesSinceLastTimeAlert(now))
         lastTimeAlertFireMs = now
-        // I8 — `lastRealLogMs` stays untouched on alert fires; it tracks the
-        // rider's last actual log so `{elapsed}` reports time-since-real-log.
-        return true
     }
 
     private fun buildAlertRequest(source: String, deficitMl: Int, elapsedMin: Long): com.enderthor.kSafe.extension.util.FuelingAlertRequest {

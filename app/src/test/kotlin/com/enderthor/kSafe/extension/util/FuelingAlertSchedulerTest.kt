@@ -527,11 +527,11 @@ class FuelingAlertSchedulerTest {
     // ── shouldFireDeficit lookahead (time → deficit direction) ────────────────
 
     @Test
-    fun `a deficit alert due within the lookahead is pulled forward onto a time tick`() {
+    fun `the lookahead reports a deficit alert due within the window`() {
         // Field ride aa23ea_11b571 (2026-10-02 sweep): the time reminder fired and the
         // deficit one 15 s later with the same number. Here the backed-off deficit is due
         // at 80 min (fired at 40, two unacked -> x2 of 20 min) and a time tick lands 15 s
-        // earlier: with the lookahead the deficit fires now and the time tick is consumed.
+        // earlier: the lookahead sees it coming, which is what lets resolveTick hold the tick.
         fun due(lookaheadMs: Long) = FuelingAlertScheduler.shouldFireDeficit(
             enabled = true,
             deficit = 972, deficitThreshold = 300,
@@ -545,7 +545,7 @@ class FuelingAlertSchedulerTest {
             lookaheadMs = lookaheadMs,
         )
         assertFalse("without lookahead the deficit is not due yet", due(0L))
-        assertTrue("within the quiet window it is pulled forward", due(FuelingAlertScheduler.QUIET_WINDOW_MS))
+        assertTrue("within the quiet window it is reported due", due(FuelingAlertScheduler.QUIET_WINDOW_MS))
     }
 
     @Test
@@ -578,7 +578,7 @@ class FuelingAlertSchedulerTest {
             now = nowMin * 60_000L,
             lookaheadMs = FuelingAlertScheduler.QUIET_WINDOW_MS,
         )
-        assertFalse("below the threshold nothing is pulled forward", due(deficit = 299, nowMin = 40))
+        assertFalse("below the threshold nothing is reported due", due(deficit = 299, nowMin = 40))
         assertFalse("the rider's initial delay is honoured to the minute", due(deficit = 500, nowMin = 28))
         assertTrue("sanity: past the delay and over the threshold", due(deficit = 500, nowMin = 30))
     }
@@ -628,5 +628,132 @@ class FuelingAlertSchedulerTest {
             "an NTP step backwards must not read as 'fired in the future'",
             FuelingAlertScheduler.suppressedByRecentAlert(60L * 60_000L, 45L * 60_000L)
         )
+    }
+
+    // ── resolveTick (the trackers' per-tick decision) ─────────────────────────
+
+    private val min = 60_000L
+
+    private fun resolve(
+        deficitDueAtMs: Long?,           // when the deficit alert becomes due; null = never
+        timeTickAtMs: Long,
+        now: Long,
+        lastDeficitAlertFireMs: Long = 0L,
+        lastRealLogMs: Long = 0L,
+        emergencyActive: Boolean = false,
+    ) = FuelingAlertScheduler.resolveTick(
+        deficitDueWithin = { look -> deficitDueAtMs != null && now + look >= deficitDueAtMs },
+        timeTickAtMs = timeTickAtMs,
+        lastDeficitAlertFireMs = lastDeficitAlertFireMs,
+        lastRealLogMs = lastRealLogMs,
+        emergencyActive = emergencyActive,
+        now = now,
+    )
+
+    @Test
+    fun `a time tick whose deficit alert is due inside the window is held, not fired`() {
+        val tick = 80L * min
+        assertEquals("deficit 15 s after the tick -> hold",
+            FuelingAlertScheduler.TickAction.NONE, resolve(tick + 15_000L, tick, now = tick))
+        assertEquals("then the deficit fires and takes the tick",
+            FuelingAlertScheduler.TickAction.FIRE_DEFICIT, resolve(tick + 15_000L, tick, now = tick + 15_000L))
+        assertEquals("deficit 4 min away -> the time tick fires",
+            FuelingAlertScheduler.TickAction.FIRE_TIME, resolve(tick + 4L * min, tick, now = tick))
+        assertEquals("the hold never outlasts the window from the grid point",
+            FuelingAlertScheduler.TickAction.FIRE_TIME, resolve(tick + 4L * min, tick, now = tick + 3L * min))
+    }
+
+    @Test
+    fun `an emergency defers both channels and consumes nothing`() {
+        val tick = 80L * min
+        assertEquals(FuelingAlertScheduler.TickAction.NONE,
+            resolve(deficitDueAtMs = 0L, timeTickAtMs = tick, now = tick, emergencyActive = true))
+        assertEquals(FuelingAlertScheduler.TickAction.NONE,
+            resolve(deficitDueAtMs = null, timeTickAtMs = tick, now = tick, emergencyActive = true))
+    }
+
+    @Test
+    fun `a held tick the rider logged after is dropped, never fired after the drink`() {
+        val tick = 80L * min
+        // Rider drank 1 min into the hold; the deficit is no longer due.
+        assertEquals(FuelingAlertScheduler.TickAction.QUIET_LOGGED,
+            resolve(deficitDueAtMs = null, timeTickAtMs = tick, now = tick + 75_000L, lastRealLogMs = tick + 60_000L))
+        assertEquals("a log before the grid point does not drop it",
+            FuelingAlertScheduler.TickAction.FIRE_TIME,
+            resolve(deficitDueAtMs = null, timeTickAtMs = tick, now = tick, lastRealLogMs = tick - 60_000L))
+    }
+
+    @Test
+    fun `the quiet window after a deficit alert still consumes the time tick`() {
+        val tick = 80L * min
+        assertEquals(FuelingAlertScheduler.TickAction.QUIET_AFTER_DEFICIT,
+            resolve(deficitDueAtMs = null, timeTickAtMs = tick, now = tick, lastDeficitAlertFireMs = tick - 2L * min))
+    }
+
+    /**
+     * Drives a never-logging rider (deficit always over threshold) through a ride on the
+     * trackers' 15-s tick, stamping state the way `CarbsTracker.tick` / `HydrationTracker.tick`
+     * do. [legacy] = the 2.2.3 rule (no hold, no logged-after drop), for comparison.
+     */
+    private fun simulate(timeMin: Long, deficitMin: Long, delayMin: Long, legacy: Boolean): List<Pair<Long, Char>> {
+        val fires = mutableListOf<Pair<Long, Char>>()
+        var lastDeficit = 0L
+        var lastTime = 0L
+        var unacked = 0
+        var now = 15_000L
+        while (now <= 4L * 60L * min) {
+            val t = now
+            val tickAt = FuelingAlertScheduler.currentDueTimeTick(
+                enabled = true, intervalMs = timeMin * min, sessionStartMs = 0L,
+                lastTimeAlertFireMs = lastTime, initialDelayMs = delayMin * min, cumLogged = 0, now = t,
+            )
+            val due = { look: Long ->
+                FuelingAlertScheduler.shouldFireDeficit(
+                    enabled = true, deficit = 1_000, deficitThreshold = 300,
+                    lastDeficitAlertFireMs = lastDeficit, reminderIntervalMs = deficitMin * min,
+                    initialDelayMs = delayMin * min, cumLogged = 0, sessionStartMs = 0L, now = t,
+                    unackedFires = unacked, lookaheadMs = look,
+                )
+            }
+            val action = if (!legacy) {
+                FuelingAlertScheduler.resolveTick(due, tickAt, lastDeficit, 0L, false, t)
+            } else when {
+                due(0L) -> FuelingAlertScheduler.TickAction.FIRE_DEFICIT
+                tickAt == 0L -> FuelingAlertScheduler.TickAction.NONE
+                FuelingAlertScheduler.suppressedByRecentAlert(lastDeficit, t) ->
+                    FuelingAlertScheduler.TickAction.QUIET_AFTER_DEFICIT
+                else -> FuelingAlertScheduler.TickAction.FIRE_TIME
+            }
+            when (action) {
+                FuelingAlertScheduler.TickAction.FIRE_DEFICIT -> {
+                    fires += t to 'D'; lastDeficit = t; unacked++
+                    if (tickAt != 0L) lastTime = t
+                }
+                FuelingAlertScheduler.TickAction.FIRE_TIME -> { fires += t to 'T'; lastTime = t }
+                FuelingAlertScheduler.TickAction.QUIET_AFTER_DEFICIT,
+                FuelingAlertScheduler.TickAction.QUIET_LOGGED -> lastTime = t
+                FuelingAlertScheduler.TickAction.NONE -> {}
+            }
+            now += 15_000L
+        }
+        return fires
+    }
+
+    @Test
+    fun `holding never moves a deficit alert and never adds an alert`() {
+        var legacyPairs = 0
+        for (delay in listOf(0L, 30L)) for (t in 1L..30L) for (d in 1L..30L) {
+            val old = simulate(t, d, delay, legacy = true)
+            val new = simulate(t, d, delay, legacy = false)
+            val cfg = "time=$t deficit=$d delay=$delay"
+            assertEquals("$cfg: deficit alerts unchanged", old.filter { it.second == 'D' }, new.filter { it.second == 'D' })
+            assertTrue("$cfg: never more alerts (${new.size} vs ${old.size})", new.size <= old.size)
+            fun pairs(f: List<Pair<Long, Char>>) = f.zipWithNext().count { (a, b) ->
+                a.second == 'T' && b.second == 'D' && b.first - a.first < FuelingAlertScheduler.QUIET_WINDOW_MS - 15_000L
+            }
+            legacyPairs += pairs(old)
+            assertEquals("$cfg: no time alert followed by a deficit one inside the window", 0, pairs(new))
+        }
+        assertTrue("sanity: the 2.2.3 rule really produced time->deficit pairs", legacyPairs > 0)
     }
 }

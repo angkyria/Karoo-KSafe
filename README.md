@@ -1,5 +1,43 @@
 # KSafe — Safety Extension for Karoo
 
+> [!NOTE]
+> **This is [@angkyria](https://github.com/angkyria)'s fork of [lockevod/Karoo-KSafe](https://github.com/lockevod/Karoo-KSafe)**, ridden and tested on a **Karoo 2**. It is upstream KSafe 2.2.3 plus the changes below; the rest of this README is the upstream documentation, updated for them. This fork isn't distributed through the Hammerhead Companion app — it is built from source and installed with `adb install`.
+
+## What this fork changes
+
+### New: Fuel Panel data field
+
+**KSafe Fuel Panel** puts hydration and carbs side by side in one field, sized for one of three full-width rows on a Karoo page (about 478×216 px on a Karoo 2). It takes the place of a 2×2 block of the Drink 1, Carb 1, Hydration Status and Carb Status fields.
+
+```
+┌────────────────────┬────────────────────┐
+│       −250ml       │        −20g        │
+│      Sip 70ml      │      Gel 30g       │
+└────────────────────┴────────────────────┘
+   tap → log Drink 1     tap → log Carb 1
+```
+
+- **Background** — that tracker's status colour, in the same bands as the status fields: blue ahead, green within margin, amber approaching your alert threshold, red over it.
+- **Big number** — the deficit; `---` before the tracker has data, grey `OFF` when the tracker or the master switch is off.
+- **Small line** — what a tap logs: the icon, label and amount of your **Drink 1** / **Carb 1** slot in the Fueling tab.
+- **Tap** — exactly like tapping the Drink 1 / Carb 1 field: a green `+70ml` / `TAP UNDO` flash, and a second tap within 6 s undoes it. Like those fields, it logs only during a ride.
+
+Add it in the Karoo's profile editor under KSafe → **KSafe Fuel Panel**.
+
+### Fixed: gaps in the FIT export
+
+With **Settings → FIT export** on, KSafe writes carbs, hydration and its other `ksafe_*` developer fields into the ride's FIT file. Upstream only wrote a record when at least 1 000 ms of wall-clock time had passed since the previous write, so a ride-clock tick that arrived a few milliseconds early was skipped. On a 105-minute Karoo 2 ride that left 504 of 6 070 records (8 %) without KSafe values, which intervals.icu draws as dips to zero on the fueling graphs. KSafe now writes on every tick of the ride clock — see [Write cadence](docs/fueling-algorithm.md#write-cadence).
+
+### Fixed: Karoo 2 compatibility (Android 8.1)
+
+- **Data fields draw and take taps.** The fields centred their text with `setGravity` through RemoteViews, which only works from Android 12. On a Karoo 2 every graphical KSafe field (SOS, timer, custom message, webhook, fueling log and status) failed to render, and its taps never reached KSafe. The centring now lives in the field layouts.
+- **The sound limit is stated, not hidden.** The Karoo 2 firmware drops every sound an extension asks for, so KSafe's alerts there are visual only. KSafe detects a Karoo 2, skips its buzzer override, and says so in the Safety and Settings tabs instead of offering a buzzer test that can't work — see [Karoo 2](#karoo-2).
+- **Rounded overlays.** The SOS, info and fueling overlays keep their rounded corners on Android versions before 12.
+
+---
+
+## About KSafe
+
 > [!IMPORTANT]
 > The **Health** and **Fueling** tabs (medical-episode detection, wellness monitor, carb/hydration tracker, FIT export) require KSafe **v2.0 or newer**. Earlier installs only ship the safety / SOS / messaging features.
 

@@ -125,8 +125,15 @@ internal object FuelingAlertScheduler {
      *
      * [lookaheadMs] asks "is the reminder due within this long?" instead of "due now".
      * Used only by [resolveTick] to decide whether to HOLD a time tick; it never makes a
-     * deficit alert fire early. It shortens the cooldown check only: the threshold and
-     * the rider's initial delay are still judged at the real `now`.
+     * deficit alert fire early. It shortens the cooldown check, and projects the deficit
+     * over the lookahead (2.2.5) at [deficitPerMs] (the tracker's current accrual rate; 0 = judge
+     * the threshold at the real `now`). The projection catches the FIRST threshold crossing:
+     * field ride `aa23ea_7ed4cc` (2026-10-03 sweep) got the carb time reminder at 23 g of a
+     * 25 g threshold and the deficit one 75 s later. It starts from [exactDeficit], the
+     * untruncated accumulator: projecting from the truncated [deficit] drops up to 1 unit
+     * per tick and releases the hold early (23.93 g read as 23). Without a lookahead, or
+     * with a non-finite / non-positive rate, the integer comparison is exactly the old one.
+     * The rider's initial delay is still judged at the real `now`.
      */
     fun shouldFireDeficit(
         enabled: Boolean,
@@ -141,6 +148,8 @@ internal object FuelingAlertScheduler {
         unackedFires: Int = 0,
         lastRealLogMs: Long = 0L,
         lookaheadMs: Long = 0L,
+        deficitPerMs: Double = 0.0,
+        exactDeficit: Double = deficit.toDouble(),
     ): Boolean {
         if (!enabled) return false
         // Initial-delay grace: only blocks the first fire AND only while no log
@@ -148,7 +157,10 @@ internal object FuelingAlertScheduler {
         if (lastDeficitAlertFireMs == 0L && cumLogged == 0 && initialDelayMs > 0L) {
             if (now - sessionStartMs < initialDelayMs) return false
         }
-        if (deficit < deficitThreshold) return false
+        val projects = lookaheadMs > 0L && deficitPerMs > 0.0 && deficitPerMs.isFinite() && exactDeficit.isFinite()
+        if (projects) {
+            if (exactDeficit + deficitPerMs * lookaheadMs < deficitThreshold) return false
+        } else if (deficit < deficitThreshold) return false
         // The log may push the cooldown origin forward, but never so far that the next
         // reminder would land beyond the x(1 shl MAX_BACKOFF_SHIFT) ceiling measured from
         // the last fire. Without this clamp a rider logging small amounts more often than

@@ -583,6 +583,27 @@ class FuelingAlertSchedulerTest {
         assertTrue("sanity: past the delay and over the threshold", due(deficit = 500, nowMin = 30))
     }
 
+    @Test
+    fun `the lookahead sees the first threshold crossing coming at the current rate`() {
+        // Field ride aa23ea_7ed4cc (2026-10-03 sweep, v2.2.4): carb time reminder at 23 g,
+        // threshold 25, burning 56 g/h -> the deficit one fired 75 s later. 2 g at 56 g/h is
+        // ~2.1 min, inside the window, so the time tick must be held.
+        fun due(lookaheadMs: Long, gph: Double) = FuelingAlertScheduler.shouldFireDeficit(
+            enabled = true,
+            deficit = 23, deficitThreshold = 25,
+            lastDeficitAlertFireMs = 0L,
+            reminderIntervalMs = 15L * 60_000L,
+            initialDelayMs = 30L * 60_000L, cumLogged = 0,
+            sessionStartMs = 0L,
+            now = 30L * 60_000L,
+            lookaheadMs = lookaheadMs,
+            deficitPerMs = gph / 3_600_000.0,
+        )
+        assertFalse("never fires early: below the threshold now", due(0L, gph = 56.0))
+        assertTrue("crosses inside the window at 56 g/h", due(FuelingAlertScheduler.QUIET_WINDOW_MS, gph = 56.0))
+        assertFalse("at 30 g/h 2 g takes 4 min, outside the window", due(FuelingAlertScheduler.QUIET_WINDOW_MS, gph = 30.0))
+    }
+
     // ── suppressedByRecentAlert (time-alert quiet window) ─────────────────────
 
     @Test
@@ -695,7 +716,12 @@ class FuelingAlertSchedulerTest {
      * trackers' 15-s tick, stamping state the way `CarbsTracker.tick` / `HydrationTracker.tick`
      * do. [legacy] = the 2.2.3 rule (no hold, no logged-after drop), for comparison.
      */
-    private fun simulate(timeMin: Long, deficitMin: Long, delayMin: Long, legacy: Boolean): List<Pair<Long, Char>> {
+    private fun simulate(
+        timeMin: Long, deficitMin: Long, delayMin: Long, legacy: Boolean,
+        rateGph: Double = 0.0,            // > 0: deficit grows from 0 at this rate (first crossing)
+        threshold: Int = 300,
+    ): List<Pair<Long, Char>> {
+        val perMs = rateGph / 3_600_000.0
         val fires = mutableListOf<Pair<Long, Char>>()
         var lastDeficit = 0L
         var lastTime = 0L
@@ -707,12 +733,14 @@ class FuelingAlertSchedulerTest {
                 enabled = true, intervalMs = timeMin * min, sessionStartMs = 0L,
                 lastTimeAlertFireMs = lastTime, initialDelayMs = delayMin * min, cumLogged = 0, now = t,
             )
+            val exact = if (rateGph > 0.0) perMs * t else 1_000.0
             val due = { look: Long ->
                 FuelingAlertScheduler.shouldFireDeficit(
-                    enabled = true, deficit = 1_000, deficitThreshold = 300,
+                    enabled = true, deficit = exact.toInt(), deficitThreshold = threshold,
                     lastDeficitAlertFireMs = lastDeficit, reminderIntervalMs = deficitMin * min,
                     initialDelayMs = delayMin * min, cumLogged = 0, sessionStartMs = 0L, now = t,
                     unackedFires = unacked, lookaheadMs = look,
+                    deficitPerMs = perMs, exactDeficit = exact,
                 )
             }
             val action = if (!legacy) {
@@ -755,5 +783,51 @@ class FuelingAlertSchedulerTest {
             assertEquals("$cfg: no time alert followed by a deficit one inside the window", 0, pairs(new))
         }
         assertTrue("sanity: the 2.2.3 rule really produced time->deficit pairs", legacyPairs > 0)
+    }
+
+    @Test
+    fun `holding covers the first threshold crossing of a growing deficit`() {
+        // Same invariants on the path the 2.2.5 fix added: the deficit starts at 0 and
+        // crosses a 25 g threshold mid-ride, accumulating fractionally on the 15-s tick.
+        var legacyPairs = 0
+        for (rate in listOf(30.0, 56.0, 90.0)) for (delay in listOf(0L, 30L)) for (t in 1L..30L) for (d in 1L..30L) {
+            val old = simulate(t, d, delay, legacy = true, rateGph = rate, threshold = 25)
+            val new = simulate(t, d, delay, legacy = false, rateGph = rate, threshold = 25)
+            val cfg = "rate=$rate time=$t deficit=$d delay=$delay"
+            assertEquals("$cfg: deficit alerts unchanged", old.filter { it.second == 'D' }, new.filter { it.second == 'D' })
+            assertTrue("$cfg: never more alerts (${new.size} vs ${old.size})", new.size <= old.size)
+            fun pairs(f: List<Pair<Long, Char>>) = f.zipWithNext().count { (a, b) ->
+                a.second == 'T' && b.second == 'D' && b.first - a.first < FuelingAlertScheduler.QUIET_WINDOW_MS - 15_000L
+            }
+            legacyPairs += pairs(old)
+            assertEquals("$cfg: no time alert followed by a deficit one inside the window", 0, pairs(new))
+        }
+        assertTrue("sanity: legacy produced first-crossing pairs", legacyPairs > 0)
+    }
+
+    @Test
+    fun `the projection starts from the untruncated deficit`() {
+        // Codex review: 23.933 g read as 23 + 1.867 g left in the window = 24.87 < 25 released
+        // the hold 60 s after the grid point, and the deficit still fired 75 s later.
+        fun due(exact: Double, lookaheadMs: Long) = FuelingAlertScheduler.shouldFireDeficit(
+            enabled = true, deficit = exact.toInt(), deficitThreshold = 25,
+            lastDeficitAlertFireMs = 0L, reminderIntervalMs = 15L * 60_000L,
+            initialDelayMs = 0L, cumLogged = 0, sessionStartMs = 0L, now = 31L * 60_000L,
+            lookaheadMs = lookaheadMs, deficitPerMs = 56.0 / 3_600_000.0, exactDeficit = exact,
+        )
+        assertTrue("2 min left at 56 g/h from 23.933 g crosses 25", due(23.933, 2L * 60_000L))
+        assertFalse("never fires early", due(23.933, 0L))
+    }
+
+    @Test
+    fun `a non-finite rate never bypasses the threshold`() {
+        for (rate in listOf(Double.NaN, Double.POSITIVE_INFINITY, -1.0)) for (look in listOf(0L, 60_000L)) {
+            assertFalse("rate=$rate look=$look", FuelingAlertScheduler.shouldFireDeficit(
+                enabled = true, deficit = 0, deficitThreshold = 25,
+                lastDeficitAlertFireMs = 0L, reminderIntervalMs = 15L * 60_000L,
+                initialDelayMs = 0L, cumLogged = 0, sessionStartMs = 0L, now = 60L * 60_000L,
+                lookaheadMs = look, deficitPerMs = rate,
+            ))
+        }
     }
 }

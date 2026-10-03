@@ -525,6 +525,7 @@ class CrashStateMachineTest {
             preRef = PreImpactRef(0.0, 0.0, 9.81, valid = true),
             silenceAz = 0.0, silenceAx = 9.81,   // ~90° from the upright reference
         )
+        assertFalse("a speed-drop entry is not the relaxation path", sm.lastSilenceEntryOnSideRelax)
         // Feed stillness; Confirm must arrive once ~4.5 s of silence elapsed.
         var t = 1_002_000L
         var confirmed = false
@@ -1261,6 +1262,8 @@ class CrashStateMachineTest {
             }
         }
         assertTrue("IMPACT on-side relaxation must reach SILENCE_CHECK", entered)
+        assertTrue("SIL_IN via= must report the relaxation path", sm.lastSilenceEntryOnSideRelax)
+        assertTrue("entry_angle is the >= 60 deg latch", sm.lastOrientationAngleDeg >= 60.0)
         // Stand on-side and still for the full 20 s window.
         var confirmed = false
         repeat(25) {

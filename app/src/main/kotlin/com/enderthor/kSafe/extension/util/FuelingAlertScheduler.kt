@@ -126,7 +126,7 @@ internal object FuelingAlertScheduler {
      * [lookaheadMs] asks "is the reminder due within this long?" instead of "due now".
      * Used only by [resolveTick] to decide whether to HOLD a time tick; it never makes a
      * deficit alert fire early. It shortens the cooldown check, and projects the deficit
-     * over the lookahead at [deficitPerMs] (the tracker's current accrual rate; 0 = judge
+     * over the lookahead (2.2.5) at [deficitPerMs] (the tracker's current accrual rate; 0 = judge
      * the threshold at the real `now`). The projection catches the FIRST threshold crossing:
      * field ride `aa23ea_7ed4cc` (2026-10-03 sweep) got the carb time reminder at 23 g of a
      * 25 g threshold and the deficit one 75 s later. It starts from [exactDeficit], the

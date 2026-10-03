@@ -787,7 +787,7 @@ class FuelingAlertSchedulerTest {
 
     @Test
     fun `holding covers the first threshold crossing of a growing deficit`() {
-        // Same invariants on the path the 2026-10-03 fix added: the deficit starts at 0 and
+        // Same invariants on the path the 2.2.5 fix added: the deficit starts at 0 and
         // crosses a 25 g threshold mid-ride, accumulating fractionally on the 15-s tick.
         var legacyPairs = 0
         for (rate in listOf(30.0, 56.0, 90.0)) for (delay in listOf(0L, 30L)) for (t in 1L..30L) for (d in 1L..30L) {

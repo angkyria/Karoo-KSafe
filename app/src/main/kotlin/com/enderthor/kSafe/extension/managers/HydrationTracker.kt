@@ -80,6 +80,8 @@ class HydrationTracker(
 
     // ─── Session state (reset by start()) ────────────────────────────────────
     @Volatile private var cumTargetMl = 0f
+    /** Deficit growth over the last tick (ml/ms), for the hold's first-crossing projection. */
+    private var deficitRatePerMs = 0.0
     @Volatile private var cumLoggedMl = 0
     @Volatile private var sessionStartMs = 0L
     @Volatile private var lastTickMs = 0L
@@ -588,6 +590,9 @@ class HydrationTracker(
             }
             val ratePerSec = ratePerHour / 3600f
             cumTargetMl += dtSec * ratePerSec
+            deficitRatePerMs = ratePerSec / 1000.0
+        } else {
+            deficitRatePerMs = 0.0
         }
         lastTickMs = now
 
@@ -667,6 +672,8 @@ class HydrationTracker(
             unackedFires           = deficitFiresSinceLog,
             lastRealLogMs          = lastRealLogMs,
             lookaheadMs            = lookaheadMs,
+            deficitPerMs           = deficitRatePerMs,
+            exactDeficit           = (cumTargetMl - cumLoggedMl).toDouble(),
         )
     }
 

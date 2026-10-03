@@ -104,6 +104,8 @@ class CarbsTracker(
 
     // ─── Session state (reset by start()) ────────────────────────────────────
     @Volatile private var cumBurnedG = 0f
+    /** Deficit growth over the last tick (g/ms), for the hold's first-crossing projection. */
+    private var deficitRatePerMs = 0.0
     /** Cumulative HR-based energy this session (kcal). Integrated alongside
      *  [cumBurnedG] in [tick] but over the burn-independent [CarbIntegrator.IntegrationStep.gatedDtMs]
      *  so it keeps advancing in the %HRmax fallback regime (where carb burn is 0). */
@@ -728,6 +730,7 @@ class CarbsTracker(
             cumBurnedG += step.deltaG
             activeIntegrationMs += step.deltaActiveMs
         }
+        deficitRatePerMs = if (config.carbsTrackerEnabled && dtMs > 0L) step.deltaG.toDouble() / dtMs else 0.0
         // Calorie accumulator: integrate energy expenditure over the movement-gated
         // dt (gatedDtMs), which advances even in the fallback regime where carb burn
         // (and deltaActiveMs) is 0. effectiveKcalPerHour falls back to %HRmax so the
@@ -820,6 +823,8 @@ class CarbsTracker(
             unackedFires           = deficitFiresSinceLog,
             lastRealLogMs          = lastRealLogMs,
             lookaheadMs            = lookaheadMs,
+            deficitPerMs           = deficitRatePerMs,
+            exactDeficit           = (cumBurnedG - cumLoggedG).toDouble(),
         )
     }
 

@@ -748,7 +748,7 @@ class CarbsTracker(
         // defaults to true. Enabling/disabling HR-calories has no effect on these.
         if (config.carbsTrackerEnabled) {
             // Alert channels. The decision — emergency deferral, deficit wins a same-tick
-            // coincidence (v17), quiet window after a deficit alert, the 2.2.4 hold of a time tick
+            // coincidence (v17), quiet window after a deficit alert, the 2.2.4 hold (2.2.5: also on the first threshold crossing) of a time tick
             // whose deficit alert is about to replace it, and dropping a tick the rider logged after —
             // lives in the pure [FuelingAlertScheduler.resolveTick] so it is unit-tested with a
             // multi-tick simulation. This only stamps and dispatches. Same shape in `HydrationTracker.tick`.

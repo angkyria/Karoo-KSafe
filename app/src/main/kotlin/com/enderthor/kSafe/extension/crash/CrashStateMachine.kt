@@ -259,6 +259,16 @@ class CrashStateMachine(
         private set
 
     /**
+     * [peakGyroSinceImpactRadS] at the moment of the most recent Confirm (the value the R6-G
+     * gate compared), for the `gyro_peak` field of the CRASH_CONFIRMED row. Snapshotted so a
+     * later impact or pause cannot change what the row reports. Shows
+     * whether a PROMPT-regime upright confirm passed the R6-G veto because of the angle or
+     * because of the gyro gate ([Thresholds.nonGapUprightVetoMaxGyroRadS]).
+     */
+    @Volatile var lastConfirmedPeakGyroRadS: Double = 0.0
+        private set
+
+    /**
      * The averaged silence-window gravity vector (m/s², device frame) at the moment
      * the last terminal SILENCE_CHECK decision fired — a `Decision.Confirm` OR a GAP/
      * PROMPT upright veto. Captured at the confirm/veto gate BEFORE [resetSilenceWindow]
@@ -370,7 +380,7 @@ class CrashStateMachine(
      * (`firstSilenceGapMs > delayedStopGapMs`) reached the 20 s confirm gate but
      * was **vetoed** because the silence-window orientation shows the device within
      * the tight upright cone (`0 ≤ angle < gapVetoUprightAngleDeg`, GAP=37° /
-     * `promptVetoUprightAngleDeg`, PROMPT=15° — NOT the 45° uprightAngleThresholdDegrees)
+     * `promptVetoUprightAngleDeg`, PROMPT=20° — NOT the 45° uprightAngleThresholdDegrees)
      * — a benign delayed stop, not a crash.
      * The state machine returns
      * [Decision.ReturnToMonitoring] instead of [Decision.Confirm] in that case.
@@ -947,7 +957,7 @@ class CrashStateMachine(
                 // the bike (it falls over); a stop-and-stand leaves it ≈ as upright as
                 // the pre-impact reference. So at the confirm gate, if orientation
                 // is now computable AND almost identical to the pre-impact reference
-                // (0 ≤ angle < vetoCone — GAP=37° / PROMPT=15°, NOT the 45°
+                // (0 ≤ angle < vetoCone — GAP=37° / PROMPT=20°, NOT the 45°
                 // timing threshold: a veto suppresses an SOS, and a false negative is
                 // far worse than a false positive, so a bike tilted past the cone (up to 45°)
                 // is left to confirm). When the angle is non-upright (≥ the veto cone)
@@ -984,11 +994,10 @@ class CrashStateMachine(
                 // vector — the angle is then independently verifiable from (pre-impact ref,
                 // sil) rather than trusting a single derived number. (v2.0.0 logged -1.0 here.)
                 captureSilenceOrientation()
-                // Use the GAP cone (37°) in the gap regime and the PROMPT cone (15°) otherwise.
+                // Use the GAP cone (37°) in the gap regime and the PROMPT cone (20°) otherwise.
                 // A prompt stop is more crash-like than a gap stop (rider rode on = conscious),
-                // so it gets the stricter 15° cone. The GAP widenings have field evidence only
-                // in the GAP regime (session 2ab57f); reverting PROMPT to 15° avoids adding FN
-                // risk with no field justification.
+                // so it gets the stricter cone. PROMPT went 15° → 20° on field evidence of its
+                // own (2026-10-06: 9 benign PROMPT confirms at 15–20°, real downed bikes ≥ 61°).
                 val vetoCone = if (gapRegime) thresholds.gapVetoUprightAngleDeg else thresholds.promptVetoUprightAngleDeg
                 val upright = vetoAngle >= 0.0 && vetoAngle < vetoCone
                 // R6-G (2026-06-03) — extend the upright veto to the PROMPT-STOP
@@ -1001,7 +1010,7 @@ class CrashStateMachine(
                 // (peakGyroSinceImpactRadS < nonGapUprightVetoMaxGyroRadS). An
                 // over-the-bars / endo that ends wheels-up (≈ upright) spikes the gyro
                 // and is left to confirm; a toppled on-side crash is already excluded
-                // by the 15° PROMPT cone (GAP=37°, PROMPT=15°). An incapacitated rider
+                // by the 20° PROMPT cone (GAP=37°, PROMPT=20°). An incapacitated rider
                 // cannot balance a laterally-unstable bike inside that cone — it topples
                 // or tumbles — so the only thing suppressed here is the balanced-conscious stand.
                 val vetoNow = upright &&
@@ -1025,6 +1034,7 @@ class CrashStateMachine(
                 // lastOrientationAngleDeg is -1.0 there); elsewhere use the latched value.
                 lastConfirmedGapMs = firstSilenceGapMs
                 lastConfirmedAngleDeg = if (gapRegime) vetoAngle else lastOrientationAngleDeg
+                lastConfirmedPeakGyroRadS = peakGyroSinceImpactRadS
                 resetTimers()
                 resetSilenceWindow()
                 state = State.MONITORING

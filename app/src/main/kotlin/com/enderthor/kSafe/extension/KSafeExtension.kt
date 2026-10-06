@@ -8,6 +8,7 @@ import com.enderthor.kSafe.data.EmergencyStatus
 import com.enderthor.kSafe.data.FitCaloriesSource
 import com.enderthor.kSafe.extension.util.EmergencyResume
 import com.enderthor.kSafe.extension.util.decideResume
+import com.enderthor.kSafe.extension.util.fitTicks
 import com.enderthor.kSafe.extension.util.formatUs
 import com.enderthor.kSafe.data.KSafeConfig
 import com.enderthor.kSafe.data.ProviderType
@@ -250,6 +251,10 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
      *  an optimisation, never a hard block. Completed in a finally so a failed load can't hang it. */
     private val fuelingRestoreLoaded = CompletableDeferred<Unit>()
     private var currentRideState: RideState? = null
+    /** The ride state as the FIT writer sees it ([startFit] via [fitTicks], which writes again
+     *  when it changes). Published by [handleRideState] only after its branches ran — see the
+     *  note there. */
+    private val fitRideState = kotlinx.coroutines.flow.MutableStateFlow<RideState?>(null)
     @Volatile private var activeProfileId: String? = null
     /** Whether the crash detector is currently running under the effective config. Kept in
      *  sync by [reapplyEffectiveCrash] so a profile switch can reconcile start/stop without
@@ -1585,6 +1590,10 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
         // See the note at the top of this function: true only after the Recording
         // branch has started/reset the trackers (their status publish is synchronous).
         if (rideActive) rideActiveFlow.value = true
+        // Same reason for the FIT writer, which writes a record the moment Recording lands
+        // ([fitTicks]): published earlier, it could write LAST ride's retained totals into
+        // the new ride's first record.
+        fitRideState.value = state
     }
 
     /**
@@ -3116,7 +3125,9 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
      * loop. ELAPSED_TIME emits exactly when the ride app advances its 1 Hz Record
      * timer, so our writes align perfectly and there's zero drift. The stream
      * pauses when the ride pauses, so paused minutes don't accumulate phantom
-     * record samples — exactly the semantics we want.
+     * record samples — exactly the semantics we want. A ride-state change also
+     * re-runs the writer ([fitTicks]), so the first second after a resume is
+     * written even when its tick arrives before the Recording state.
      *
      * Trackers may not be initialised when the FIT pipeline starts (rider hasn't
      * opted into fueling). We fall back to 0 safely — the column appears in the
@@ -3292,11 +3303,15 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
             // but the writer runs on [Dispatchers.IO] so it never blocks Main, and the per-tick
             // reads are cheap volatile snapshots (B29).
             //
+            // A ride-state change re-runs the same gate ([fitTicks]). The clock and the state arrive
+            // on separate streams, and a resume tick that landed while the state still read Paused
+            // was otherwise never written: the first record after each stop, 40 of the 46 records
+            // still missing ksafe_* across seven Karoo 2 rides (2026-10-06).
+            //
             // SESSION message: keeps its write-on-change + 5 g cumBurnedG deadband below. It is
             // "last write wins" — only the value at FIT-close becomes the Strava/Intervals.icu
             // activity header — so dense session writes would churn allocations for no visible
             // benefit. Sentinel Double.NaN: NaN != NaN, so the first tick always emits.
-            var lastRecordElapsed   = Double.NaN
             var lastSesCarbsG       = Double.NaN
             var lastSesHydMl        = Double.NaN
             var lastSesCarbsBurnedG = Double.NaN
@@ -3305,9 +3320,10 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
             var lastSesKcal         = Double.NaN
             var lastSesStdKcal      = Double.NaN
 
-            karooSystem.streamDataFlow(DataType.Type.ELAPSED_TIME)
+            val elapsedFlow = karooSystem.streamDataFlow(DataType.Type.ELAPSED_TIME)
                 .mapNotNull { (it as? StreamState.Streaming)?.dataPoint?.singleValue }
-                .collect { elapsed ->
+            fitTicks(elapsedFlow, fitRideState)
+                .collect { tick ->
                     // B29 — read the trackers' / monitor's published StateFlow snapshot
                     // instead of calling `getStatus()` / `getSummary()` every second.
                     // Each `.value` access is a single volatile read of an already-
@@ -3328,7 +3344,7 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
                     val driftPct    = wellness?.currentDriftPct?.toDouble() ?: 0.0
                     val maxDriftPct = wellness?.maxDriftPct?.toDouble() ?: 0.0
                     val fires       = wellness?.totalFires?.toDouble() ?: 0.0
-                    when (currentRideState) {
+                    when (tick.rideState) {
                         is RideState.Recording -> {
                             // Records (per-second time series): only fields that have a
                             // meaningful instantaneous reading or trace a useful curve over
@@ -3347,7 +3363,7 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
                             // fields and the curves draw as clean lines on zero-filling hosts. Only
                             // a repeated ELAPSED_TIME value (the ride clock didn't advance, so
                             // there is no new record to fill) is skipped — see the header above.
-                            if (writeDevFields && elapsed != lastRecordElapsed) {
+                            if (writeDevFields && tick.writeRecord) {
                                 val recordFields = mutableListOf(
                                     FieldValue(carbField,         carbsG),
                                     FieldValue(hydField,          hydMl),
@@ -3357,7 +3373,6 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
                                 )
                                 if (writeCalories) recordFields.add(FieldValue(caloriesField, kcal))
                                 emitter.onNext(WriteToRecordMesg(recordFields))
-                                lastRecordElapsed = elapsed
                             }
                             // Session (single-value activity-header summary): totals at
                             // ride end + ride-max statistics. Each tick overwrites the

@@ -26,7 +26,7 @@ Add it in the Karoo's profile editor under KSafe → **KSafe Fuel Panel**.
 
 ### Fixed: gaps in the FIT export
 
-With **Settings → FIT export** on, KSafe writes carbs, hydration and its other `ksafe_*` developer fields into the ride's FIT file. Upstream only wrote a record when at least 1 000 ms of wall-clock time had passed since the previous write, so a ride-clock tick that arrived a few milliseconds early was skipped. On a 105-minute Karoo 2 ride that left 504 of 6 070 records (8 %) without KSafe values, which intervals.icu draws as dips to zero on the fueling graphs. KSafe now writes on every tick of the ride clock — see [Write cadence](docs/fueling-algorithm.md#write-cadence).
+With **Settings → FIT export** on, KSafe writes carbs, hydration and its other `ksafe_*` developer fields into the ride's FIT file. Upstream only wrote a record when at least 1 000 ms of wall-clock time had passed since the previous write, so a ride-clock tick that arrived a few milliseconds early was skipped. On a 105-minute Karoo 2 ride that left 504 of 6 070 records (8 %) without KSafe values, which intervals.icu draws as dips to zero on the fueling graphs. KSafe now writes on every tick of the ride clock. That left one empty record after each stop: the ride clock and the ride state reach KSafe separately, and the first tick after a resume could arrive while the state still read Paused. KSafe now also writes when the ride state changes — see [Write cadence](docs/fueling-algorithm.md#write-cadence).
 
 ### Fixed: Karoo 2 compatibility (Android 8.1)
 

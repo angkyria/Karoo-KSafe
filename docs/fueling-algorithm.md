@@ -501,17 +501,20 @@ All seven fields are float32 (`fitBaseTypeId = 136`) and live in developer-data 
 
 The collector pulses on the Karoo's `DataType.Type.ELAPSED_TIME` stream (1 Hz native cadence — same tick as the HR / power records).
 
-**Record message: every tick.** The current values are re-written on every tick whose ELAPSED_TIME value has advanced, so every record carries the fields:
+**Record message: every tick.** The current values are re-written on every tick whose ELAPSED_TIME value has advanced, so every record carries the fields. The gate lives in `fitTicks` (`extension/util/FitTicks.kt`), which also runs it when the ride state changes:
 
 ```kotlin
-if (writeDevFields && elapsed != lastRecordElapsed) {
-    emitter.onNext(WriteToRecordMesg(recordFields))
-    lastRecordElapsed = elapsed
+fitTicks(elapsedFlow, fitRideState).collect { tick ->
+    // ...
+    if (writeDevFields && tick.writeRecord) {
+        emitter.onNext(WriteToRecordMesg(recordFields))
+    }
 }
 ```
 
 - **Why not write-on-change.** An earlier version wrote only when a value changed, on the assumption that FIT consumers interpolate between samples. Intervals.icu (and others) don't: they zero-fill every record that lacks the field, so a sparse cumulative series draws as spikes to zero instead of a line. A fixed multi-second throttle has the same problem at the throttle interval — only a gap-free, per-record series draws cleanly.
 - **Why the ride clock, not the wall clock.** A `now - lastWrite >= 1000 ms` gate on this ~1 Hz stream dropped every tick that arrived a few ms early, and each dropped tick is a record with no `ksafe_*` values. On a 2026-10-02 Karoo 2 ride that was 504 of 6 070 records (8 %), spread evenly as single-second gaps; the CORE heat extension, writing on every tick of the same stream, lost one. Only a repeated ELAPSED_TIME value — the ride clock did not advance, so there is no new record — is skipped.
+- **Why the ride state runs the gate too.** The clock and the ride state reach KSafe on separate streams, in no fixed order. At a resume the first tick can arrive while the state still reads Paused. When the writer looked at the state only on a clock tick, that second was never written: the first record after every stop. On seven Karoo 2 rides (2026-10-06) that was 40 of the 46 records still missing `ksafe_*` after the wall-clock fix; the CORE heat extension, whose writer combines the same two streams, had none. A state change now runs the gate with the latest clock value, and each ride-clock value is still written once. `handleRideState` publishes the state the writer sees (`fitRideState`) only after its branches ran, so a new ride's first record can't carry the previous ride's retained totals.
 
 The cache initial value is `Double.NaN` — `NaN != NaN` is true in IEEE 754, so the first tick of every ride always emits.
 

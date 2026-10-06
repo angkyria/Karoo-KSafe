@@ -1,7 +1,7 @@
 # KSafe — Safety Extension for Karoo
 
 > [!NOTE]
-> **This is [@angkyria](https://github.com/angkyria)'s fork of [lockevod/Karoo-KSafe](https://github.com/lockevod/Karoo-KSafe)**, ridden and tested on a **Karoo 2**. It is upstream KSafe 2.2.4 plus the changes below; the rest of this README is the upstream documentation, updated for them. This fork isn't distributed through the Hammerhead Companion app — it is built from source and installed with `adb install`.
+> **This is [@angkyria](https://github.com/angkyria)'s fork of [lockevod/Karoo-KSafe](https://github.com/lockevod/Karoo-KSafe)**, ridden and tested on a **Karoo 2**. It is upstream KSafe 2.2.6 plus the changes below; the rest of this README is the upstream documentation, updated for them. This fork isn't distributed through the Hammerhead Companion app — it is built from source and installed with `adb install`.
 
 ## What this fork changes
 

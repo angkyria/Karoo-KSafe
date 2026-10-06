@@ -104,6 +104,8 @@ class CarbsTracker(
 
     // ─── Session state (reset by start()) ────────────────────────────────────
     @Volatile private var cumBurnedG = 0f
+    /** Deficit growth over the last tick (g/ms), for the hold's first-crossing projection. */
+    private var deficitRatePerMs = 0.0
     /** Cumulative HR-based energy this session (kcal). Integrated alongside
      *  [cumBurnedG] in [tick] but over the burn-independent [CarbIntegrator.IntegrationStep.gatedDtMs]
      *  so it keeps advancing in the %HRmax fallback regime (where carb burn is 0). */
@@ -728,6 +730,7 @@ class CarbsTracker(
             cumBurnedG += step.deltaG
             activeIntegrationMs += step.deltaActiveMs
         }
+        deficitRatePerMs = if (config.carbsTrackerEnabled && dtMs > 0L) step.deltaG.toDouble() / dtMs else 0.0
         // Calorie accumulator: integrate energy expenditure over the movement-gated
         // dt (gatedDtMs), which advances even in the fallback regime where carb burn
         // (and deltaActiveMs) is 0. effectiveKcalPerHour falls back to %HRmax so the
@@ -745,7 +748,7 @@ class CarbsTracker(
         // defaults to true. Enabling/disabling HR-calories has no effect on these.
         if (config.carbsTrackerEnabled) {
             // Alert channels. The decision — emergency deferral, deficit wins a same-tick
-            // coincidence (v17), quiet window after a deficit alert, the 2.2.4 hold of a time tick
+            // coincidence (v17), quiet window after a deficit alert, the 2.2.4 hold (2.2.5: also on the first threshold crossing) of a time tick
             // whose deficit alert is about to replace it, and dropping a tick the rider logged after —
             // lives in the pure [FuelingAlertScheduler.resolveTick] so it is unit-tested with a
             // multi-tick simulation. This only stamps and dispatches. Same shape in `HydrationTracker.tick`.
@@ -820,6 +823,8 @@ class CarbsTracker(
             unackedFires           = deficitFiresSinceLog,
             lastRealLogMs          = lastRealLogMs,
             lookaheadMs            = lookaheadMs,
+            deficitPerMs           = deficitRatePerMs,
+            exactDeficit           = (cumBurnedG - cumLoggedG).toDouble(),
         )
     }
 

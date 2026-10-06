@@ -80,7 +80,7 @@ data class Thresholds(
      * "they'll move" assumption (session `effa0e`). That case is now vetoed —
      * see [nonGapUprightVetoMaxGyroRadS]. This does NOT weaken real-crash
      * coverage: an incapacitated rider cannot keep a laterally-unstable bike
-     * balanced within the veto cones — 15° [promptVetoUprightAngleDeg] for the
+     * balanced within the veto cones — 20° [promptVetoUprightAngleDeg] for the
      * prompt-stop regime (R6-G) and 37° [gapVetoUprightAngleDeg] for the gap
      * regime (R6-F) — so it topples on-side (≥ cone → confirms) or tumbles (high
      * gyro → confirms). Only the balanced-conscious upright stand (low gyro, ≈0°
@@ -120,12 +120,14 @@ data class Thresholds(
      */
     val gapVetoUprightAngleDeg: Double = 37.0,
     /**
-     * PROMPT-regime (prompt-stop) upright veto cone. Kept at the original tight 15° while the
-     * GAP-regime cone is 37°: a prompt stop (rider stopped quickly post-impact) is more
-     * crash-like than a gap stop (rider rode on = conscious), so it gets the stricter cone.
-     * The widenings (25°, then 37°) have field evidence only in the GAP regime.
+     * PROMPT-regime (prompt-stop) upright veto cone. 20° while the GAP-regime cone is 37°:
+     * a prompt stop (rider stopped quickly post-impact) is more crash-like than a gap stop
+     * (rider rode on = conscious), so it gets the stricter cone. Widened 15° → 20° on
+     * 2026-10-06: the corpus replay found 9 benign PROMPT confirms at 15–20° (bump → brake →
+     * stand, mostly gap 6–8 s; all cancelled except `cde013_b26795`, which dispatched) and
+     * no real downed bike below 61.6°. 20° rather than 25° keeps the stricter-than-GAP margin.
      */
-    val promptVetoUprightAngleDeg: Double = 15.0,
+    val promptVetoUprightAngleDeg: Double = 20.0,
     /**
      * Peak gyroscope magnitude (rad/s, measured from the impact through the
      * silence window) below which the **non-gap (prompt-stop) upright veto**
@@ -141,7 +143,7 @@ data class Thresholds(
      * to leave the bike wheels-down (≈ upright) spikes the gyro well above this
      * (the 2026-06-03 on-side crash `27baa0` hit 9.65 rad/s) and is therefore
      * NOT vetoed. A toppled-on-side crash is already excluded by the upright
-     * veto cone (15° [promptVetoUprightAngleDeg] in this prompt-stop regime).
+     * veto cone (20° [promptVetoUprightAngleDeg] in this prompt-stop regime).
      * Set below the tumble range and above the
      * benign-stop range; a false negative is far worse than a false positive,
      * so keep it low (veto only when rotation was clearly minimal).

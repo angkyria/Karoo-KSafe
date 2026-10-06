@@ -170,11 +170,11 @@ class CrashDetectionManager(
         const val GAP_VETO_UPRIGHT_ANGLE_DEG = 37.0
 
         /** Angle (deg) below which the PROMPT-stop regime confirm is vetoed (R6-G).
-         *  Kept at the original tight 15° — the prompt stop is more crash-like than
-         *  a gap stop, so it gets the stricter cone. The GAP widenings have field
-         *  evidence only in the GAP regime (session 2ab57f).
+         *  Widened 15° → 20° (2026-10-06 corpus replay: 9 benign field PROMPT confirms
+         *  at 15–20°, one dispatched — `cde013_b26795`; real downed bikes read ≥ 61°).
+         *  Still stricter than the GAP cone — the prompt stop is more crash-like.
          *  Matches [Thresholds.promptVetoUprightAngleDeg]. */
-        const val PROMPT_VETO_UPRIGHT_ANGLE_DEG = 15.0
+        const val PROMPT_VETO_UPRIGHT_ANGLE_DEG = 20.0
 
         /** Peak gyro (rad/s) below which the non-gap (prompt-stop) upright veto (R6-G)
          *  may engage — distinguishes a benign stand from an endo that ends upright.
@@ -751,8 +751,8 @@ class CrashDetectionManager(
                 val regime = if (stateMachine.lastUprightVetoGapRegime) "GAP" else "PROMPT"
                 // veto_thr must reflect the cone actually applied for THIS regime: GAP uses the
                 // lenient gapVetoUprightAngleDeg (37°), PROMPT (prompt-stop, R6-G) the stricter
-                // promptVetoUprightAngleDeg (15°). Logging the gap cone unconditionally made every
-                // PROMPT-regime row read the GAP cone when 15° was in force.
+                // promptVetoUprightAngleDeg (20°). Logging the gap cone unconditionally made every
+                // PROMPT-regime row read the GAP cone when the PROMPT cone was in force.
                 val vetoThr = if (stateMachine.lastUprightVetoGapRegime)
                     stateMachine.thresholds.gapVetoUprightAngleDeg
                 else
@@ -988,10 +988,11 @@ class CrashDetectionManager(
             // pre_x/y/z = pre-impact reference, sil_x/y/z = averaged silence orientation.
             // Logging both makes pre_impact_angle independently verifiable from the raw
             // geometry — the gap regime used to log only pre_impact_angle=-1.0 (see R6-F).
-            "deviation=%.2f,speed=%.1f,confirm_spd_thr=${config.crashConfirmSpeedKmh},grade=%.1f,cadence=%.0f,gps_stale=$gpsStale,preset=${config.crashSensitivity},effective_dev_max=$effectiveDevMax,effective_silence_ms=$effectiveSilenceMs,silence_path=$silencePath,countdown_s=${config.countdownSeconds},gap_ms=$gapMs,pre_impact_angle=%.1f,pre_x=%.2f,pre_y=%.2f,pre_z=%.2f,sil_x=%.2f,sil_y=%.2f,sil_z=%.2f,decided_by=$decidedBy".formatUs(
+            "deviation=%.2f,speed=%.1f,confirm_spd_thr=${config.crashConfirmSpeedKmh},grade=%.1f,cadence=%.0f,gps_stale=$gpsStale,preset=${config.crashSensitivity},effective_dev_max=$effectiveDevMax,effective_silence_ms=$effectiveSilenceMs,silence_path=$silencePath,countdown_s=${config.countdownSeconds},gap_ms=$gapMs,pre_impact_angle=%.1f,pre_x=%.2f,pre_y=%.2f,pre_z=%.2f,sil_x=%.2f,sil_y=%.2f,sil_z=%.2f,gyro_peak=%.2f,decided_by=$decidedBy".formatUs(
                 deviation, currentSpeedKmh, currentGrade, currentCadence, angle,
                 ref.x, ref.y, ref.z,
-                stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ)
+                stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ,
+                stateMachine.lastConfirmedPeakGyroRadS)
         }
     }
 

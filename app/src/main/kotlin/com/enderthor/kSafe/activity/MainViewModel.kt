@@ -226,10 +226,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *  - Extra/unknown keys are silently ignored (forward-compat with future fields).
      *  - Missing sections fall back to app defaults (backward-compat with older exports).
      *
-     * Returns true on success, false if the JSON is structurally invalid.
+     * Returns true once both blobs are persisted, false if the JSON is structurally invalid.
+     * A storage failure while writing propagates to the caller instead of reading as success.
      */
-    fun importFromJson(json: String): Boolean {
-        return try {
+    suspend fun importFromJson(json: String): Boolean {
+        val (migrated, senderConfigs) = try {
             val root = jsonWithUnknownKeys.parseToJsonElement(json) as? JsonObject
                 ?: return false
 
@@ -258,25 +259,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // layout; without this the read path eventually migrates it, but persisting the
             // un-migrated blob is a latent footgun (e.g. a version-0 stamp re-runs the v0→v2
             // crash-speed rewrite on every read). migrateToLatest() is idempotent.
-            val migrated = config.migrateToLatest()
-            // Persist both blobs in ONE coroutine, sequentially, under [settingsWriteMutex] so
-            // the import can't interleave with a concurrent updateConfig / updateSenderConfig /
-            // setActiveProvider (e.g. an in-flight ProviderScreen debounced auto-save) that
-            // would otherwise read a pre-import snapshot and clobber the imported values.
-            // DataStore can't write two keys atomically, but the ordered, serialised launch
-            // removes the interleave window and guarantees senders are never written before
-            // the config they belong to.
-            viewModelScope.launch {
-                settingsWriteMutex.withLock {
-                    configManager.saveConfig(migrated)
-                    configManager.saveSenderConfigs(senderConfigs)
-                }
-            }
-            true
+            config.migrateToLatest() to senderConfigs
         } catch (e: Exception) {
             Timber.e(e, "Failed to import config from JSON")
-            false
+            return false
         }
+        // Both blobs in ONE DataStore transaction, so an interrupted import can never leave the
+        // imported config paired with the old credentials. [settingsWriteMutex] keeps it from
+        // interleaving with an in-flight ProviderScreen auto-save that read a pre-import snapshot.
+        settingsWriteMutex.withLock {
+            configManager.saveConfigAndSenders(migrated, senderConfigs)
+        }
+        return true
     }
 
     override fun onCleared() {

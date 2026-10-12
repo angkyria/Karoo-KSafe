@@ -1,11 +1,14 @@
 package com.enderthor.kSafe.extension.managers
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.enderthor.kSafe.activity.dataStore
+import com.enderthor.kSafe.activity.runtimeStore
+import com.enderthor.kSafe.activity.settingsBackup
 import com.enderthor.kSafe.data.EmergencyState
 import com.enderthor.kSafe.data.FuelingState
 import com.enderthor.kSafe.data.KSafeConfig
@@ -36,6 +39,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -180,6 +186,14 @@ class ConfigurationManager(private val context: Context) {
         }
     }
 
+    /** Writes config and senders in ONE transaction (import): both land or neither does. */
+    suspend fun saveConfigAndSenders(config: KSafeConfig, senders: List<SenderConfig>) {
+        context.dataStore.edit { prefs ->
+            prefs[configKey] = jsonForStorage.encodeToString(listOf(config))
+            prefs[senderConfigKey] = jsonForStorage.encodeToString(senders)
+        }
+    }
+
     /**
      * ATOMIC read-modify-write of the sender-config blob: the decode + [transform] + encode all
      * run inside a single `dataStore.edit {}`, which DataStore serializes — so concurrent writers
@@ -239,7 +253,7 @@ class ConfigurationManager(private val context: Context) {
     // ─── EmergencyState ───────────────────────────────────────────────────────
 
     suspend fun saveEmergencyState(state: EmergencyState) {
-        context.dataStore.edit { prefs ->
+        context.runtimeStore.edit { prefs ->
             prefs[emergencyStateKey] = jsonForStorage.encodeToString(state)
         }
     }
@@ -248,7 +262,7 @@ class ConfigurationManager(private val context: Context) {
         // No distinctUntilChanged — emergency state changes are infrequent and
         // missing an IDLE emission (e.g. due to a concurrent DataStore write) would
         // leave the data fields stuck showing the last countdown value.
-        return context.dataStore.data.map { prefs ->
+        return context.runtimeStore.data.map { prefs ->
             val raw = prefs[emergencyStateKey] ?: defaultEmergencyStateJson
             try {
                 jsonWithUnknownKeys.decodeFromString<EmergencyState>(raw)
@@ -279,7 +293,7 @@ class ConfigurationManager(private val context: Context) {
      * loses more than ~30 s of integrated target / logged intake.
      */
     suspend fun saveFuelingState(state: FuelingState) {
-        context.dataStore.edit { prefs ->
+        context.runtimeStore.edit { prefs ->
             prefs[fuelingStateKey] = jsonForStorage.encodeToString(state)
         }
     }
@@ -293,7 +307,7 @@ class ConfigurationManager(private val context: Context) {
      */
     suspend fun loadFuelingState(): FuelingState {
         return try {
-            val prefs = context.dataStore.data.first()
+            val prefs = context.runtimeStore.data.first()
             val raw = prefs[fuelingStateKey] ?: defaultFuelingStateJson
             jsonWithUnknownKeys.decodeFromString<FuelingState>(raw)
         } catch (e: Throwable) {
@@ -306,26 +320,32 @@ class ConfigurationManager(private val context: Context) {
      *  so the next ride starts with a clean accumulator instead of resuming the
      *  previous ride's totals. */
     suspend fun clearFuelingState() {
-        context.dataStore.edit { prefs -> prefs.remove(fuelingStateKey) }
+        context.runtimeStore.edit { prefs -> prefs.remove(fuelingStateKey) }
     }
 
     // ─── Last hydration ride (weigh-in calibration source) ────────────────────
 
     /**
-     * Ride-end write: stores [record] (when the ride had a live hydration session) and
-     * removes the fueling snapshot in ONE transaction, so a crash between the two can never
-     * leave a fresh Last-ride record next to a stale accumulator (or vice versa). The
-     * snapshot key also holds carbs, so the removal is exactly [clearFuelingState].
+     * Ride-end write: removes the fueling snapshot, then stores [record] (when the ride had a
+     * live hydration session). The two live in different files (runtime vs settings), so it
+     * is not one transaction; clearing first means a crash in between can only lose this
+     * ride's Last-ride record, never leave a fresh record next to a stale accumulator.
      */
     suspend fun finalizeHydrationRide(record: LastHydrationRide?) {
-        context.dataStore.edit { prefs ->
-            if (record != null) prefs[lastHydrationRideKey] = jsonForStorage.encodeToString(record)
-            prefs.remove(fuelingStateKey)
+        clearFuelingState()
+        if (record != null) {
+            context.dataStore.edit { prefs -> prefs[lastHydrationRideKey] = jsonForStorage.encodeToString(record) }
         }
     }
 
     fun loadLastHydrationRideFlow(): Flow<LastHydrationRide?> {
         return context.dataStore.data.map { prefs -> decodeLastHydrationRide(prefs[lastHydrationRideKey]) }
+            .catch { e ->
+                // A storage read failure must not crash the collector (the Hydration screen's stateIn).
+                if (e is CancellationException) throw e
+                Timber.e(e, "LastHydrationRide DataStore read failed")
+                emit(null)
+            }
             .distinctUntilChanged()
     }
 
@@ -386,8 +406,24 @@ class ConfigurationManager(private val context: Context) {
                     e.javaClass.simpleName, e.message, snippet)
                 WellnessHistory()
             }
+        }.catch { e ->
+            // A storage read failure must not crash the service's `.first()` callers.
+            if (e is CancellationException) throw e
+            Timber.e(e, "WellnessHistory DataStore read failed")
+            emit(WellnessHistory())
         }.distinctUntilChanged()
     }
+
+    // ─── Settings backup ──────────────────────────────────────────────────────
+
+    /**
+     * Refreshes the [SettingsBackup] mirror that restores a reset settings store. Runs on its own
+     * collector of settings (see [sharedConfigStateFlow]) so a slow write never delays config
+     * publication; a failed write throws so that collector retries with the latest snapshot.
+     * A crash between a commit and this mirror leaves the previous generation, which is still a
+     * coherent settings snapshot.
+     */
+    internal suspend fun backupSettings(prefs: Preferences) = SettingsBackup.mirror(context.settingsBackup, prefs)
 
     // ─── Shared KSafeConfig flow (process-wide singleton) ─────────────────────
     companion object {
@@ -441,6 +477,25 @@ class ConfigurationManager(private val context: Context) {
                         // KEEPS last-good (never reverts to defaults, which would re-enable detectors the
                         // rider disabled / reset crash thresholds mid-ride). CancellationException is
                         // rethrown so teardown stays transparent.
+                        // Settings backup on its OWN child collector: a stalled fsync must never hold
+                        // back config publication. Conflated, so a slow disk only skips stale snapshots.
+                        // The write sits UPSTREAM of retryWhen: any failure (Error included) re-subscribes
+                        // and re-mirrors the latest snapshot instead of escaping into sharedJob.
+                        launch {
+                            context.applicationContext.dataStore.data
+                                .distinctUntilChanged()
+                                .conflate()
+                                .onEach { prefs -> mgr.backupSettings(prefs) }
+                                .retryWhen { cause, _ ->
+                                    (cause !is CancellationException).also {
+                                        if (it) {
+                                            Timber.e(cause, "SettingsBackup: mirror failed, retrying")
+                                            delay(5_000L)
+                                        }
+                                    }
+                                }
+                                .collect {}
+                        }
                         var backoffMs = 500L
                         while (isActive) {
                             try {

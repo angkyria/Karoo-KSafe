@@ -1,5 +1,6 @@
 package com.enderthor.kSafe.extension.util
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -44,5 +45,13 @@ class CoastingCaloriesTest {
     @Test
     fun `no fresh power reading is not coasting`() {
         assertFalse(CoastingCalories.isCoasting(freshPowerW = null, nowMs = now, lastNonZeroPowerMs = now - 3_000L))
+    }
+
+    @Test
+    fun `coasting reports a power source so the calorie fields show 0, not searching`() {
+        // HR-only physiology: the estimator returns NONE and the %HRmax fallback is skipped (0 kcal/h).
+        assertEquals(CalorieSource.POWER, CalorieSource.from(CarbBurnEstimator.Confidence.NONE, 0.0, coasting = true))
+        assertEquals(CalorieSource.POWER, CalorieSource.from(CarbBurnEstimator.Confidence.KEYTEL, 0.0, coasting = true))
+        assertEquals(CalorieSource.NONE, CalorieSource.from(CarbBurnEstimator.Confidence.NONE, 0.0))
     }
 }

@@ -15,9 +15,10 @@ package com.enderthor.kSafe.extension.util
  */
 object CoastingCalories {
 
-    /** Longest run of 0 W still read as coasting. Coasts are mostly seconds long;
-     *  a meter stuck at 0 W hands back to the HR estimate after two minutes. */
-    const val LIVE_METER_ZERO_WINDOW_MS = 120_000L
+    /** Longest run of 0 W still read as coasting. Coasts are mostly seconds long; three
+     *  minutes also covers most descents on rolling terrain, while a meter stuck at 0 W
+     *  still hands back to the HR estimate quickly. Longer descents fall back to HR. */
+    const val LIVE_METER_ZERO_WINDOW_MS = 180_000L
 
     /**
      * @param freshPowerW Latest power reading if it is fresh (null when stale or absent).

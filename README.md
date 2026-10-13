@@ -1,7 +1,7 @@
 # KSafe — Safety Extension for Karoo
 
 > [!NOTE]
-> **This is [@angkyria](https://github.com/angkyria)'s fork of [lockevod/Karoo-KSafe](https://github.com/lockevod/Karoo-KSafe)**, ridden and tested on a **Karoo 2**. It is upstream KSafe 2.2.6 plus the changes below; the rest of this README is the upstream documentation, updated for them. This fork isn't distributed through the Hammerhead Companion app — it is built from source and installed with `adb install`.
+> **This is [@angkyria](https://github.com/angkyria)'s fork of [lockevod/Karoo-KSafe](https://github.com/lockevod/Karoo-KSafe)**, ridden and tested on a **Karoo 2**. It is upstream KSafe 2.3.1 plus the changes below; the rest of this README is the upstream documentation, updated for them. This fork isn't distributed through the Hammerhead Companion app — it is built from source and installed with `adb install`.
 
 ## What this fork changes
 
@@ -19,7 +19,7 @@
 
 - **Background** — that tracker's status colour, in the same bands as the status fields: blue ahead, green within margin, amber approaching your alert threshold, red over it.
 - **Big number** — the deficit; `---` before the tracker has data, grey `OFF` when the tracker or the master switch is off.
-- **Small line** — what a tap logs: the icon, label and amount of your **Drink 1** / **Carb 1** slot in the Fueling tab.
+- **Small line** — what a tap logs: the icon, label and amount of your **Drink 1** / **Carb 1** slot in the Hydration / Carbs tabs.
 - **Tap** — exactly like tapping the Drink 1 / Carb 1 field: a green `+70ml` / `TAP UNDO` flash, and a second tap within 6 s undoes it. Like those fields, it logs only during a ride.
 
 Add it in the Karoo's profile editor under KSafe → **KSafe Fuel Panel**.

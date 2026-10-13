@@ -11,6 +11,7 @@ import com.enderthor.kSafe.extension.util.ALERT_TITLE_MAX_CHARS
 import com.enderthor.kSafe.extension.util.CalorieSource
 import com.enderthor.kSafe.extension.util.CarbBurnEstimator
 import com.enderthor.kSafe.extension.util.CarbIntegrator
+import com.enderthor.kSafe.extension.util.CoastingCalories
 import com.enderthor.kSafe.extension.util.HrCalorieFallback
 import com.enderthor.kSafe.extension.util.FuelingAlertScheduler
 import com.enderthor.kSafe.extension.util.ZoneSnapshot
@@ -93,6 +94,10 @@ class CarbsTracker(
      *  (CarbIntegrator skips active-time accrual when effectiveGph == 0). */
     @Volatile private var lastHrUpdateMs = 0L
     @Volatile private var lastPowerUpdateMs = 0L
+    /** Wall-clock of the last power reading above 0 W. Lets the calorie counter tell
+     *  coasting (0 W moments after pedalling) from a meter latched at 0 — see
+     *  [CoastingCalories]. */
+    @Volatile private var lastNonZeroPowerMs = 0L
     /** Latest speed reading in km/h. `null` until the SDK first emits — used by the
      *  movement gate in [tick] to skip integration when stationary. */
     @Volatile private var lastSpeedKmh: Double? = null
@@ -430,7 +435,12 @@ class CarbsTracker(
 
     fun updateUserProfile(p: UserProfile) { lastUserProfile = p }
     fun updateHr(bpm: Int)                { lastHrBpm = bpm; lastHrUpdateMs = System.currentTimeMillis() }
-    fun updatePower(w: Int)               { lastPowerW = w; lastPowerUpdateMs = System.currentTimeMillis() }
+    fun updatePower(w: Int) {
+        val now = System.currentTimeMillis()
+        lastPowerW = w
+        lastPowerUpdateMs = now
+        if (w > 0) lastNonZeroPowerMs = now
+    }
     fun updateSpeed(kmh: Double) {
         // D6/G2 fix — drop NaN AND Infinity samples; see MedicalEpisodeDetector
         // for the IEEE-754 taint mechanism this guards against.
@@ -602,8 +612,11 @@ class CarbsTracker(
         // field would display a live kcal/h (the monitor may be running for carbs /
         // hydration) while the total field shows 0 — the two siblings would disagree.
         val caloriesOn = config.hrCaloriesEnabled
-        val kcalH = if (caloriesOn) effectiveKcalPerHour(burn) else 0.0
-        val calorieSource = if (caloriesOn) CalorieSource.from(burn.confidence, kcalH) else CalorieSource.NONE
+        // Evaluated once so the rate and its source agree: a coasting 0 kcal/h is a valid
+        // power reading, not "no source" (which would blank the calorie fields).
+        val coasting = caloriesOn && isCoasting()
+        val kcalH = if (caloriesOn) effectiveKcalPerHour(burn, coasting) else 0.0
+        val calorieSource = if (caloriesOn) CalorieSource.from(burn.confidence, kcalH, coasting) else CalorieSource.NONE
         return CarbStatus(
             cumBurnedG = cumBurnedG.toInt(),
             cumLoggedG = cumLoggedG,
@@ -679,10 +692,20 @@ class CarbsTracker(
         )
     }
 
+    /** True while a live power meter reads 0 W shortly after producing power ([CoastingCalories]). */
+    private fun isCoasting(): Boolean {
+        val now = System.currentTimeMillis()
+        val freshPower = lastPowerW?.takeIf { lastPowerUpdateMs > 0L && now - lastPowerUpdateMs <= SENSOR_STALE_MS }
+        return CoastingCalories.isCoasting(freshPower, now, lastNonZeroPowerMs)
+    }
+
     /** Instantaneous energy expenditure (kcal/h) for the calorie counter. Uses the
      *  estimator's value when any tier fired; otherwise the calorie-only %HRmax
-     *  fallback (which needs just fresh HR + weight). Never feeds the carb path. */
-    private fun effectiveKcalPerHour(burn: CarbBurnEstimator.BurnEstimate): Double {
+     *  fallback (which needs just fresh HR + weight). Coasting on a live power meter
+     *  counts 0 kcal ([CoastingCalories]) rather than the HR tier the estimator falls
+     *  to on 0 W. Never feeds the carb path. */
+    private fun effectiveKcalPerHour(burn: CarbBurnEstimator.BurnEstimate, coasting: Boolean = isCoasting()): Double {
+        if (coasting) return 0.0
         if (burn.confidence != CarbBurnEstimator.Confidence.NONE) return burn.kcalPerHour
         val now = System.currentTimeMillis()
         val freshHr = lastHrBpm?.takeIf { lastHrUpdateMs > 0L && now - lastHrUpdateMs <= SENSOR_STALE_MS }

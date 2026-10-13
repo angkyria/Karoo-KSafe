@@ -47,8 +47,10 @@ enum class CalorieSource {
     POWER, KEYTEL, SWAIN, HRMAX, NONE;
 
     companion object {
-        fun from(confidence: CarbBurnEstimator.Confidence, fallbackKcalPerHour: Double): CalorieSource =
-            when (confidence) {
+        /** [coasting]: a live power meter reading 0 W while coasting ([CoastingCalories]) — the
+         *  0 kcal/h it yields is a power figure, so the source is POWER, not NONE. */
+        fun from(confidence: CarbBurnEstimator.Confidence, fallbackKcalPerHour: Double, coasting: Boolean = false): CalorieSource =
+            if (coasting) POWER else when (confidence) {
                 CarbBurnEstimator.Confidence.POWER  -> POWER
                 CarbBurnEstimator.Confidence.KEYTEL -> KEYTEL
                 CarbBurnEstimator.Confidence.SWAIN  -> SWAIN

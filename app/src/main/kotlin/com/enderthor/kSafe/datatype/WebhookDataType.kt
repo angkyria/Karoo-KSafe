@@ -171,7 +171,7 @@ class WebhookDataType(
                     }
                     // See CarbLogDataType — pair with `dark` so a theme flip re-renders.
                     frame to dark
-                }.distinctUntilChanged().collect { (f, _) ->
+                }.distinctUntilChanged().pacedForView().collect { (f, _) ->
                     emitter.updateView(buildView(context, config, f.bgColor, f.main, f.hint, f.clickable))
                 }
             } catch (_: CancellationException) {

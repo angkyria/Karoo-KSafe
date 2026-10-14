@@ -154,22 +154,16 @@ class SafetyTimerDataType(
                 // on the same integer second after sub-second drift). Worth ~1 emit/min
                 // saved continuously across long rides.
                 var lastEmitKey: String? = null
-                // Last updateView CALL time, seeded with the synchronous seed frame's
-                // timestamp. The guard below is anchored to THIS, not to attach time: an
-                // attach-anchored hold renders its frame at t=250 ms, which opens a new
-                // ~170 ms coalescing window of its own — the corrective frame right after
-                // it (e.g. the okColorFlow emission) was dropped while lastEmitKey
-                // advanced, leaving the field wrong until the next minute rollover (or
-                // FOREVER for the constant-content expired branch). Anchoring to the last
-                // render guarantees ≥250 ms between any two updateView calls, so no frame
-                // we emit can ever be coalesced away and lastEmitKey stays honest.
+                // Last updateView CALL time, seeded with the synchronous seed frame's.
+                // Every emit waits on it (awaitRenderSlot): a frame the SDK's 1 Hz limit
+                // drops while lastEmitKey advances leaves the field wrong until the next
+                // minute rollover (or FOREVER for the constant-content expired branch).
                 var lastRenderMs = startViewAtMs
                 suspend fun emit(bgColor: Int, main: String, hint: String, clickable: Boolean) {
                     val key = "$bgColor|$main|$hint|$clickable"
                     if (key == lastEmitKey) return
-                    val sinceLast = System.currentTimeMillis() - lastRenderMs
-                    if (sinceLast < COALESCE_GUARD_MS) delay(COALESCE_GUARD_MS - sinceLast)
-                    // Content was computed BEFORE the hold and may be ≤250 ms stale; the
+                    awaitRenderSlot(lastRenderMs)
+                    // Content was computed BEFORE the hold and may be < 1 s stale; the
                     // surrounding loop re-reads state after every emit (merge wake / 1 Hz
                     // tick) and the guard above lets that corrective frame through, so any
                     // staleness self-corrects within one iteration.

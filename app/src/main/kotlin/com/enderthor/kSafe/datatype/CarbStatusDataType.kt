@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -111,12 +110,13 @@ class CarbStatusDataType(
         // as a fully white field (white text on white host bg).
         //
         // Seed with the REAL current status when the tracker is already live (mid-ride
-        // re-entry: page swap, profile switch). The host coalesces updateView calls inside
-        // its ~170 ms window and keeps only the FIRST — a '---' seed followed milliseconds
-        // later by the StateFlow's replay of the current status meant the real frame was
-        // dropped, and since the StateFlow dedupes by equality the field sat on '---' until
-        // the next CHANGED status (indefinitely while autopaused). '---' only when no
-        // tracker/status exists yet (extension cold boot, no ride).
+        // re-entry: page swap, profile switch). karoo-ext drops any updateView < 900 ms
+        // after the last one — a '---' seed followed milliseconds later by the StateFlow's
+        // replay meant the real frame was dropped, and since the StateFlow dedupes by
+        // equality the field sat on '---' until the next CHANGED status (indefinitely while
+        // autopaused). The collect below is paced from this seed (pacedForView) so no later
+        // frame is dropped either. '---' only when no tracker/status exists yet.
+        val seedRenderMs = System.currentTimeMillis()
         emitter.updateView(statusView(config, KSafeExtension.carbsTrackerFlow.value?.statusFlow?.value))
 
         val scopeJob = Job()
@@ -139,7 +139,7 @@ class CarbStatusDataType(
                 // coherent with the integrator and ~95% cheaper than the previous
                 // 1-Hz polling loop.
                 val tracker = KSafeExtension.carbsTrackerFlow.filterNotNull().first()
-                tracker.statusFlow.collectLatest { status ->
+                tracker.statusFlow.pacedForView(seedRenderMs).collect { status ->
                     // Render rules (waiting '---' vs disabled grey vs live semaphore)
                     // live in [statusView], shared with the synchronous seed above.
                     emitter.updateView(statusView(config, status))

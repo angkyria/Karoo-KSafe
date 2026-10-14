@@ -221,7 +221,7 @@ class CarbLogDataType(
                     // Pair with `dark` so a day↔night flip (which doesn't change state/config)
                     // still produces a distinct value and re-renders the AUTO-colour field.
                     frame to dark
-                }.distinctUntilChanged().collect { (f, _) ->
+                }.distinctUntilChanged().pacedForView().collect { (f, _) ->
                     emitter.updateView(buildView(context, config, f.bgColor, f.main, f.hint, f.clickable, f.leftDrawableRes))
                 }
             } catch (_: CancellationException) {

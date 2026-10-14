@@ -25,9 +25,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -36,9 +40,29 @@ import timber.log.Timber
 private const val COLOR_COUNTDOWN = 0xFFE65100.toInt()
 private const val COLOR_ALERTING  = 0xFFB71C1C.toInt()
 
-/** Margin over the Karoo host's ~170 ms updateView coalescing window (keeps only the
- *  first frame inside it) — renders held until this has passed are never dropped. */
-internal const val COALESCE_GUARD_MS = 250L
+/** karoo-ext 1.1.9 `ViewEmitter.updateView` silently DROPS any call < 900 ms after the
+ *  last accepted one (1 Hz limit, logs "ignoring updateView, too soon") and never resends
+ *  it, so a dropped final frame leaves the field stale. Every render waits until at least
+ *  this long after the previous one (50 ms slop over the SDK's 900). */
+internal const val COALESCE_GUARD_MS = 950L
+
+/** Suspends until a render after [lastRenderMs] will be accepted by the SDK. Capped at
+ *  [COALESCE_GUARD_MS] so a wall-clock jump can never stall a field. */
+internal suspend fun awaitRenderSlot(lastRenderMs: Long) {
+    val wait = (lastRenderMs + COALESCE_GUARD_MS - System.currentTimeMillis()).coerceAtMost(COALESCE_GUARD_MS)
+    if (wait > 0) delay(wait)
+}
+
+/** Conflated + paced for a [ViewEmitter]: at most one value per [COALESCE_GUARD_MS], and
+ *  the latest one always lands. [seedRenderMs] = time of a synchronous seed updateView. */
+internal fun <T> Flow<T>.pacedForView(seedRenderMs: Long = 0L): Flow<T> = flow {
+    var last = seedRenderMs
+    conflate().collect {
+        awaitRenderSlot(last)
+        emit(it)
+        last = System.currentTimeMillis()
+    }
+}
 
 class SOSDataType(
     datatype: String,
@@ -131,14 +155,11 @@ class SOSDataType(
 
         val viewJob = scope.launch {
             try {
-                // Last updateView CALL time — the coalescing guard below is anchored to
-                // this, NOT to attach time: a guarded frame held to t=250 ms would
-                // otherwise open a NEW ~170 ms window of its own, and a colour emission
-                // landing right after it (cold DataStore, 250-420 ms) was dropped with
-                // renderedColor already advanced — configured colour lost for the ride.
-                // Anchoring to the last render guarantees every emitted frame is ≥250 ms
-                // after the previous one, so no frame we emit can ever be coalesced away.
-                // Seeded with the synchronous seed frame's timestamp.
+                // Last updateView CALL time, seeded with the synchronous seed frame's.
+                // The loop waits on it (awaitRenderSlot) before every render, so no frame
+                // is ever dropped by the SDK's 1 Hz limit: an unguarded colour frame lost
+                // the configured colour for the ride, and an unguarded ALERTING frame
+                // right after the last countdown tick left the field on "SOS 1s".
                 var lastRenderMs = startViewAtMs
                 // Track config-driven idle colour in its own StateFlow so the IDLE branch
                 // can suspend on `merge(uiState, colorFlow)` instead of polling every 5 s.
@@ -151,23 +172,12 @@ class SOSDataType(
                     configManager.loadConfigFlow().collect { c -> colorFlow.value = c.sosFieldColor }
                 }
                 while (true) {
+                    // Hold BEFORE reading state, so the frame painted after the hold is
+                    // the current one (steady countdown ticks are ≥1 s apart: no wait).
+                    awaitRenderSlot(lastRenderMs)
                     val state = EmergencyManager.uiState.value
                     when (state.status) {
                         EmergencyStatus.IDLE -> {
-                            // Coalescing guard: the host keeps only the FIRST updateView
-                            // inside its ~170 ms window. The DataStore colour emission
-                            // typically lands within that window of the seed frame, so the
-                            // re-render carrying the rider's configured colour (or AUTO)
-                            // was dropped — and with renderedColor already advanced, the
-                            // merge below never re-emitted while IDLE: the field kept the
-                            // default green for the rest of the ride. Holding any IDLE
-                            // render until ≥250 ms after the PREVIOUS render guarantees it
-                            // sticks (and colorFlow is read AFTER the hold, so the frame
-                            // carries the freshest colour). Zero steady-state cost.
-                            val sinceLast = System.currentTimeMillis() - lastRenderMs
-                            if (sinceLast < COALESCE_GUARD_MS) {
-                                kotlinx.coroutines.delay(COALESCE_GUARD_MS - sinceLast)
-                            }
                             val renderedColor = colorFlow.value
                             lastRenderMs = System.currentTimeMillis()
                             emitter.updateView(buildView(
@@ -191,10 +201,6 @@ class SOSDataType(
                         }
                         EmergencyStatus.COUNTDOWN -> {
                             val secs = state.countdownRemaining()
-                            // No guard here (a countdown must paint immediately; the 1 Hz
-                            // tick self-heals a coalesced frame within a second) but the
-                            // anchor IS updated so the next IDLE render can't land inside
-                            // this frame's window.
                             lastRenderMs = System.currentTimeMillis()
                             emitter.updateView(buildView(
                                 context, config, COLOR_COUNTDOWN,

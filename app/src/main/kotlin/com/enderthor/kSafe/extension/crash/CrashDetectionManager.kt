@@ -158,6 +158,10 @@ class CrashDetectionManager(
          *  the impact (orientation regime). Matches [Thresholds.silenceDurationUprightMs]. */
         const val SILENCE_DURATION_UPRIGHT_MS = 20_000L
 
+        /** Minimum speed (km/h) for an impact's pre-reference to count as riding attitude
+         *  in the shadow-only [RidingAttitudeBaseline]. */
+        const val RIDING_ATTITUDE_MIN_SPEED_KMH = 12.0
+
         /** Angle threshold (degrees) above which the current gravity vector is
          *  classified as on-side (short window); below it the bike is deemed upright
          *  (long window). Matches [Thresholds.uprightAngleThresholdDegrees]. */
@@ -283,6 +287,13 @@ class CrashDetectionManager(
 
     private val movingVigilance = MovingVigilance(stateMachine.thresholds)
 
+    /** Shadow-only per-ride riding attitude; logged as `ride_*` on CRASH_OK / GAP_VETO, decides nothing. */
+    private val ridingAttitude = RidingAttitudeBaseline()
+
+    /** The current impact's qualifying pre-reference, admitted at the NEXT impact so this
+     *  event's own CRASH_OK / GAP_VETO row is measured against a baseline that excludes it. */
+    private var pendingRidingRef: Vec3? = null
+
     /**
      * Deadline for the diagnostic VIGIL_SHADOW row (`0L` = none pending). Stamped at
      * VIGIL_ARM and evaluated in [onSensorSample] independently of [movingVigilance],
@@ -391,6 +402,8 @@ class CrashDetectionManager(
         postImpactBoostUntil = 0L
         synchronized(recentTmoTimestamps) { recentTmoTimestamps.clear() }
         resetWindowAccumulators()
+        ridingAttitude.clear()   // new ride; deliberately kept across pause/resume
+        pendingRidingRef = null
 
         rebuildThresholds(boostActive = false)
         stateMachine.reset()
@@ -763,7 +776,8 @@ class CrashDetectionManager(
                 "angle=%.1f,veto_thr=$vetoThr,regime=$regime,gyro_peak=%.2f,gyro_thr=${stateMachine.thresholds.nonGapUprightVetoMaxGyroRadS},speed=%.1f,deviation=%.2f,cadence=%.0f,grade=%.1f,preset=${config.crashSensitivity},pre_x=%.2f,pre_y=%.2f,pre_z=%.2f,sil_x=%.2f,sil_y=%.2f,sil_z=%.2f".formatUs(
                     stateMachine.lastGapUprightVetoAngleDeg, stateMachine.peakGyroSinceImpactRadS, currentSpeedKmh, dev, currentCadence, currentGrade,
                     ref.x, ref.y, ref.z,
-                    stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ)
+                    stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ) +
+                    ridingAttitudeFields()
             }
         }
 
@@ -781,9 +795,11 @@ class CrashDetectionManager(
             is CrashStateMachine.Decision.EnterImpact -> {
                 // Capture the ~2 s pre-impact orientation reference and hand it to
                 // the state machine before the SILENCE_CHECK phase consumes it.
-                stateMachine.setPreImpactReference(
-                    sensorReader.preImpactReference(sample.timestampMs)
-                )
+                val ref = sensorReader.preImpactReference(sample.timestampMs)
+                stateMachine.setPreImpactReference(ref)
+                pendingRidingRef?.let { ridingAttitude.add(it.x, it.y, it.z) }
+                pendingRidingRef = if (ref.valid && !lastGpsStaleState && currentSpeedKmh >= RIDING_ATTITUDE_MIN_SPEED_KMH)
+                    Vec3(ref.x, ref.y, ref.z) else null
                 logImpactEnter(sample, decision.reason, boostActive)
             }
             is CrashStateMachine.Decision.Confirm -> {
@@ -992,8 +1008,22 @@ class CrashDetectionManager(
                 deviation, currentSpeedKmh, currentGrade, currentCadence, angle,
                 ref.x, ref.y, ref.z,
                 stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ,
-                stateMachine.lastConfirmedPeakGyroRadS)
+                stateMachine.lastConfirmedPeakGyroRadS) +
+                ridingAttitudeFields()
         }
+    }
+
+    /**
+     * Shadow fields for the "tilted pre-reference" FP class: ride_dev = angle between the
+     * silence orientation and the learned riding attitude (-1.0 = no baseline yet / no
+     * silence vector), ride_n = references in the baseline, ride_x/y/z = the baseline.
+     */
+    private fun ridingAttitudeFields(): String {
+        val b = ridingAttitude.baseline()
+        val dev = ridingAttitude.deviationDeg(
+            stateMachine.lastSilenceOrientX, stateMachine.lastSilenceOrientY, stateMachine.lastSilenceOrientZ, b)
+        return ",ride_dev=%.1f,ride_n=${ridingAttitude.size},ride_x=%.2f,ride_y=%.2f,ride_z=%.2f".formatUs(
+            dev, b?.x ?: Double.NaN, b?.y ?: Double.NaN, b?.z ?: Double.NaN)
     }
 
     private fun handleReturnToMonitoring(

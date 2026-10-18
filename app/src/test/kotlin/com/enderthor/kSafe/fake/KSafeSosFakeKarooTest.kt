@@ -11,7 +11,9 @@ import fi.nikosavola.karooext.testing.HttpResponder
 import fi.nikosavola.karooext.testing.HttpResponses
 import fi.nikosavola.karooext.testing.robolectric.FakeKarooRule
 import fi.nikosavola.karooext.testing.robolectric.RobolectricPump
+import io.hammerhead.karooext.models.InRideAlert
 import io.hammerhead.karooext.models.PlayBeepPattern
+import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
 import io.hammerhead.karooext.models.TurnScreenOn
 import java.util.concurrent.atomic.AtomicReference
@@ -110,7 +112,10 @@ class KSafeSosFakeKarooTest {
         ksafe.startExtension()
         ksafe.tap(FieldTapReceiver.ACTION_SOS)
 
-        ksafe.settleUntil(30.seconds) { karoo.system.httpRequests.firstOrNull() }
+        // The first attempt waits on real IO (ALERTING persist, sender config read), so wait for
+        // it in real time; a looper-bounded settleUntil runs out early on a busy JVM.
+        RobolectricPump.advanceBy(6.seconds)
+        karoo.awaitValue { karoo.system.httpRequests.firstOrNull() }
         assertEquals("only one attempt before the backoff", 1, karoo.system.httpRequests.size)
         ksafe.settle(30.seconds)
         assertEquals("no immediate retry", 1, karoo.system.httpRequests.size)
@@ -141,5 +146,25 @@ class KSafeSosFakeKarooTest {
         assertEquals(9, karoo.system.httpRequests.size)
         val descending = karoo.system.effectsOf<PlayBeepPattern>().last()
         assertEquals(600, descending.tones.first().frequency)
+    }
+
+    @Test
+    fun `an alert that never gets through during a ride warns on the ride screen`() {
+        ksafe.seed(config, ntfy)
+        karoo.system.setLocation(60.17, 24.94)
+        karoo.system.setRideState(RideState.Recording)
+        karoo.system.responder = HttpResponses.status(503)
+        ksafe.startExtension()
+        ksafe.tap(FieldTapReceiver.ACTION_SOS)
+
+        val title = karoo.app.getString(R.string.alert_delivery_failed_title)
+        val alert = ksafe.settleUntil(40.minutes) {
+            karoo.system.effectsOf<InRideAlert>().firstOrNull { it.title == title }
+        }
+
+        assertEquals(karoo.app.getString(R.string.alert_delivery_failed_detail, "NTFY"), alert.detail)
+        assertEquals(R.color.alert_red, alert.backgroundColor)
+        // One channel only: no drawer notification stacked on top of the in-ride alert.
+        assertTrue(karoo.system.effectsOf<SystemNotification>().none { it.header == title })
     }
 }

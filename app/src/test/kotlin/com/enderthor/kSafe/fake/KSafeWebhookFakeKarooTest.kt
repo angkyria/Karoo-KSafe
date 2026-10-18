@@ -3,6 +3,8 @@ package com.enderthor.kSafe.fake
 import com.enderthor.kSafe.R
 import com.enderthor.kSafe.activity.FieldTapReceiver
 import com.enderthor.kSafe.data.KSafeConfig
+import com.enderthor.kSafe.datatype.WebhookState
+import fi.nikosavola.karooext.testing.HttpResponder
 import fi.nikosavola.karooext.testing.HttpResponses
 import fi.nikosavola.karooext.testing.RoutingResponder
 import fi.nikosavola.karooext.testing.robolectric.FakeKarooRule
@@ -18,6 +20,8 @@ import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 @RunWith(RobolectricTestRunner::class)
@@ -130,5 +134,51 @@ class KSafeWebhookFakeKarooTest {
         assertTrue(karoo.system.httpRequests.isEmpty())
         assertTrue(karoo.system.effectsOf<SystemNotification>().none { it.header == "Garage" })
         assertEquals(0, karoo.system.pendingHttpCount)
+    }
+
+    private fun slotState() = WebhookState.flowForSlot(1).value.state
+
+    @Test
+    fun `a second press while the request is in flight is ignored`() {
+        ksafe.seed(webhookConfig)
+        // The fake serves HTTP off the main looper, so holding the response here keeps the
+        // first press in FIRING without blocking the extension.
+        val release = CountDownLatch(1)
+        karoo.system.responder = HttpResponder { request ->
+            release.await(10, TimeUnit.SECONDS)
+            HttpResponses.success("ok".toByteArray()).respond(request)
+        }
+        val host = ksafe.startExtension()
+
+        host.bonusAction("trigger-webhook-1")
+        karoo.awaitValue { karoo.system.httpRequests.firstOrNull() }
+        assertEquals(WebhookState.FIRING, slotState())
+
+        host.bonusAction("trigger-webhook-1")
+        RobolectricPump.pumpMainLooper()
+        release.countDown()
+
+        karoo.awaitEffect<SystemNotification> { it.header == "Garage" }
+        assertEquals(1, karoo.system.httpRequests.size)
+    }
+
+    @Test
+    fun `a press during the confirmation is ignored and one after it clears fires again`() {
+        ksafe.seed(webhookConfig)
+        karoo.system.responder = HttpResponses.success("ok".toByteArray())
+        val host = ksafe.startExtension()
+
+        host.bonusAction("trigger-webhook-1")
+        karoo.awaitValue { slotState().takeIf { it == WebhookState.SUCCESS } }
+        host.bonusAction("trigger-webhook-1")
+        RobolectricPump.pumpMainLooper()
+        assertEquals(1, karoo.system.httpRequests.size)
+
+        // SUCCESS reverts to IDLE after 4 s.
+        RobolectricPump.advanceBy(5.seconds)
+        assertEquals(WebhookState.IDLE, slotState())
+        host.bonusAction("trigger-webhook-1")
+        karoo.awaitValue { karoo.system.httpRequests.getOrNull(1) }
+        assertEquals(2, karoo.system.httpRequests.size)
     }
 }

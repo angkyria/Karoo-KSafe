@@ -116,8 +116,8 @@ class CarbStatusDataType(
         // equality the field sat on '---' until the next CHANGED status (indefinitely while
         // autopaused). The collect below is paced from this seed (pacedForView) so no later
         // frame is dropped either. '---' only when no tracker/status exists yet.
-        val seedRenderMs = System.currentTimeMillis()
         emitter.updateView(statusView(config, KSafeExtension.carbsTrackerFlow.value?.statusFlow?.value))
+        val seedRenderMs = System.currentTimeMillis()  // after the seed returned
 
         val scopeJob = Job()
         val scope = CoroutineScope(Dispatchers.Default + scopeJob)

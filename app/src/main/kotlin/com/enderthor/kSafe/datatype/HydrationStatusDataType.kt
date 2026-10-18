@@ -114,8 +114,8 @@ class HydrationStatusDataType(
         // CarbStatusDataType: karoo-ext's 1 Hz updateView limit kept the '---'
         // seed and dropped the StateFlow's replay frame on mid-ride re-entry, leaving
         // the field stuck on '---' until the next CHANGED status.
-        val seedRenderMs = System.currentTimeMillis()
         emitter.updateView(statusView(config, KSafeExtension.hydrationTrackerFlow.value?.statusFlow?.value))
+        val seedRenderMs = System.currentTimeMillis()  // after the seed returned
 
         val scopeJob = Job()
         val scope = CoroutineScope(Dispatchers.Default + scopeJob)

@@ -141,7 +141,7 @@ class WebhookDataType(
         // StateFlow seeded with IDLE so the combine fires as soon as configFlow emits (the
         // same trigger the seed used). Dropping the seed removes the race, the redundant
         // build+IPC, and matches the "let the data flow's first emission be the only early
-        // updateView" rule for coalescing Karoo firmware.
+        // updateView" rule under karoo-ext's 1 Hz updateView limit.
         val viewJob = scope.launch {
             try {
                 // See CarbLogDataType — Frame + distinctUntilChanged dedups identical frames

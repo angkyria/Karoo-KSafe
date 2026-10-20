@@ -188,7 +188,7 @@ class FuelPanelDataType(
                     configManager.loadConfigFlow(),
                 ) { hyd, carb, hydLog, carbLog, ksafeConfig ->
                     frameFor(config.preview, ksafeConfig, hyd, carb, hydLog, carbLog)
-                }.distinctUntilChanged().collect { frame ->
+                }.distinctUntilChanged().pacedForView().collect { frame ->
                     emitter.updateView(buildView(context, config, frame))
                 }
             } catch (_: CancellationException) {

@@ -1091,3 +1091,17 @@ Decisive on-side evidence (≥25 samples = ~500 ms of sustained `accelOk` on-sid
 8. Continuous 4.5 s (gap ≤ 8 s) or 20 s (gap > 8 s) of accel-still → Confirm → emergency countdown.
 
 Total time from impact to confirm: roughly 1-2 s (settle) + 4.5 s silence ≈ 5-7 s on the prompt-stop fast path, or ~9 s tumble + 20 s silence ≈ 29 s on the long-tumble path — vs the SpeedDropMonitor backstop's ~5 min in the cases where that backstop is even reliable.
+
+## Riding-attitude shadow (2026-10-18, logging only)
+
+**Class under study — "tilted pre-reference".** The orientation regime compares the silence vector against the pre-impact reference only. When that reference is captured with the bike pitched or lifted (hike-a-bike, front-wheel lift, steep MTB step) and the silence is the bike back on its wheels, `angle(sil, pre) ≥ 45°` reads as on-side. Field: `dea8f7_bfa76e` (v2.3.0, 2026-10-13) dispatched an alert this way (`pre=(3.85, 8.05, 2.41)`, `sil=(1.35, 3.75, 8.98)`, 51.5°); a corpus scan finds 10 confirms / 6 installs with the same shape.
+
+**What ships: observation only.** `RidingAttitudeBaseline` keeps the pre-impact references of impacts taken at ≥ 12 km/h with fresh GPS (`RIDING_ATTITUDE_MIN_SPEED_KMH`), last 20, per-axis median, valid from 3. An impact's own reference is admitted only at the next impact, so its CRASH_OK / GAP_VETO row is measured against a baseline that excludes it. Cleared in `CrashDetectionManager.start` (new ride / idle re-arm), kept across pause/resume. `CRASH_OK` and `GAP_VETO` gain:
+
+- `ride_dev` — degrees between `sil_x/y/z` and the baseline (`-1.0` = no baseline yet or no silence vector);
+- `ride_n` — references in the baseline;
+- `ride_x / ride_y / ride_z` — the baseline (`NaN` when absent).
+
+It changes no decision. Cost: one deque insert per qualifying impact; one per-axis median of ≤ 20 values plus one angle per CRASH_OK / GAP_VETO row, only when calibration logging is on.
+
+**Why not act on it yet.** A first design disabled the on-side paths (IMPACT relaxation, SILENCE_CHECK relaxation, CR2 latch preservation) when `ride_dev < 20°`. The 2026-10-18 cross-AI review rejected it: those paths are what confirms a crash whose bike keeps rolling (`68c6ea_2f27c1` confirmed at 4.8–5.0 km/h above a 3 km/h confirm threshold through them), so disabling them can lose an event, not just delay it. Open questions for the next sweeps: is a speed-qualified pre-reference a stable riding attitude (cornering, braking, out-of-saddle, remounts), and does any genuine crash land within ~20° of it. Any future rule must be timing-only and keep the rolling-bike protections; the 45–60° band (no IMPACT relaxation there) is the narrowest candidate.

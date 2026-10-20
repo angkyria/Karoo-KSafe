@@ -21,7 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -110,10 +109,11 @@ class HydrationStatusDataType(
         // text renders invisible on white. Night mode masked the bug because the host
         // theme is dark there.
         // Seed with the REAL current status when the tracker is already live — see
-        // CarbStatusDataType: the host's ~170 ms updateView coalescing kept the '---'
+        // CarbStatusDataType: karoo-ext's 1 Hz updateView limit kept the '---'
         // seed and dropped the StateFlow's replay frame on mid-ride re-entry, leaving
         // the field stuck on '---' until the next CHANGED status.
         emitter.updateView(statusView(config, KSafeExtension.hydrationTrackerFlow.value?.statusFlow?.value))
+        val seedRenderMs = System.currentTimeMillis()  // after the seed returned
 
         val scopeJob = Job()
         val scope = CoroutineScope(Dispatchers.Default + scopeJob)
@@ -128,7 +128,7 @@ class HydrationStatusDataType(
             try {
                 // Push-based — see CarbStatusDataType for the rationale.
                 val tracker = KSafeExtension.hydrationTrackerFlow.filterNotNull().first()
-                tracker.statusFlow.collectLatest { status ->
+                tracker.statusFlow.pacedForView(seedRenderMs).collect { status ->
                     // Render rules (waiting '---' vs disabled grey vs live semaphore)
                     // live in [statusView], shared with the synchronous seed above.
                     emitter.updateView(statusView(config, status))

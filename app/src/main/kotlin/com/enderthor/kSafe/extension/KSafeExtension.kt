@@ -2538,9 +2538,7 @@ class KSafeExtension : KarooExtension("ksafe", BuildConfig.VERSION_NAME), Corout
         // duplicated request is genuinely bad. WebhookState transitions to FIRING below
         // (and to SUCCESS / ERROR on completion, before the auto-reset to IDLE) so the
         // queued tap reliably sees a non-IDLE/ERROR state and exits.
-        // NOTE: no facade test harness for KSafeExtension exists today; if one is added,
-        // add "webhook tap during in-flight FIRING is ignored" + "after success returns
-        // to IDLE then fires normally" tests against this guard.
+        // Covered by KSafeWebhookFakeKarooTest.
         val inFlight = WebhookState.flowForSlot(slot).value.state
         if (inFlight == WebhookState.FIRING || inFlight == WebhookState.SUCCESS) {
             Timber.d("Webhook slot=$slot tap ignored — already in $inFlight")

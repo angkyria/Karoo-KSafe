@@ -146,7 +146,7 @@ class CombinedFuelLogDataType(
                             Frame(idleColorFromConfig(ksafeConfig), label, amountsHint(ksafeConfig), clickable = true, leftDrawableRes = leftDrawable)
                     }
                     frame to dark
-                }.distinctUntilChanged().collect { (f, _) ->
+                }.distinctUntilChanged().pacedForView().collect { (f, _) ->
                     emitter.updateView(buildView(context, config, f.bgColor, f.main, f.hint, f.clickable, f.leftDrawableRes))
                 }
             } catch (_: CancellationException) {

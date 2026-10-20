@@ -87,13 +87,12 @@ class SafetyTimerDataType(
     }
 
     override fun startView(context: Context, config: ViewConfig, emitter: ViewEmitter) {
-        val startViewAtMs = System.currentTimeMillis()
         // Synchronous seed frame BEFORE launching any coroutine — see SOSDataType /
         // CarbStatusDataType for the blank-white-field rationale (host paints its
         // theme bg until the first Dispatchers.Default emission; day mode → white
         // text on white). Mirrors the loop's branch selection from the canonical
-        // StateFlow so the first frame is correct even if the host coalesces and
-        // keeps it. The configured idle colour is only available asynchronously, so
+        // StateFlow so the first frame is correct even if the SDK's 1 Hz limit drops
+        // the next one. The configured idle colour is only available asynchronously, so
         // the normal branch seeds the default green (the real colour lands on the
         // okColorFlow emission below).
         run {
@@ -125,6 +124,8 @@ class SafetyTimerDataType(
                 }
             }
         }
+        // Taken AFTER the seed updateView returned — see awaitRenderSlot.
+        val seedRenderMs = System.currentTimeMillis()
 
         val scopeJob = Job()
         val scope = CoroutineScope(Dispatchers.Default + scopeJob)
@@ -151,30 +152,21 @@ class SafetyTimerDataType(
                 // on the same integer second after sub-second drift). Worth ~1 emit/min
                 // saved continuously across long rides.
                 var lastEmitKey: String? = null
-                // Last updateView CALL time, seeded with the synchronous seed frame's
-                // timestamp. The guard below is anchored to THIS, not to attach time: an
-                // attach-anchored hold renders its frame at t=250 ms, which opens a new
-                // ~170 ms coalescing window of its own — the corrective frame right after
-                // it (e.g. the okColorFlow emission) was dropped while lastEmitKey
-                // advanced, leaving the field wrong until the next minute rollover (or
-                // FOREVER for the constant-content expired branch). Anchoring to the last
-                // render guarantees ≥250 ms between any two updateView calls, so no frame
-                // we emit can ever be coalesced away and lastEmitKey stays honest.
-                var lastRenderMs = startViewAtMs
-                suspend fun emit(bgColor: Int, main: String, hint: String, clickable: Boolean) {
+                // Time the last updateView RETURNED, seeded with the seed frame's. The loop
+                // waits on it (awaitRenderSlot) BEFORE reading state: a frame the SDK's
+                // 1 Hz limit drops while lastEmitKey advances leaves the field wrong until
+                // the next minute rollover (or FOREVER for the constant-content expired
+                // branch), and content computed before a hold could miss a minute boundary.
+                var lastRenderMs = seedRenderMs
+                fun emit(bgColor: Int, main: String, hint: String, clickable: Boolean) {
                     val key = "$bgColor|$main|$hint|$clickable"
                     if (key == lastEmitKey) return
-                    val sinceLast = System.currentTimeMillis() - lastRenderMs
-                    if (sinceLast < COALESCE_GUARD_MS) delay(COALESCE_GUARD_MS - sinceLast)
-                    // Content was computed BEFORE the hold and may be ≤250 ms stale; the
-                    // surrounding loop re-reads state after every emit (merge wake / 1 Hz
-                    // tick) and the guard above lets that corrective frame through, so any
-                    // staleness self-corrects within one iteration.
                     lastEmitKey = key
-                    lastRenderMs = System.currentTimeMillis()
                     emitter.updateView(buildView(context, config, bgColor, main, hint, clickable))
+                    lastRenderMs = System.currentTimeMillis()
                 }
                 while (true) {
+                    awaitRenderSlot(lastRenderMs)
                     val state = EmergencyManager.uiState.value
                     when {
                         state.status == EmergencyStatus.COUNTDOWN -> {
